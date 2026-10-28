@@ -1,0 +1,165 @@
+# ######################################################
+#                       HOME GUI                       #
+# ######################################################
+# This file controls the homes GUI layout and items.
+#
+# Layout System:
+#   Each row is a string of 9 characters. Each character represents a slot:
+#     # -> Navigation row (arrows, page controls) - DO NOT place anything else here
+#     - -> Empty/filler slot (nothing placed here by default)
+#     h -> Home slot. Homes are placed here in order.
+#         IMPORTANT: Always leave an empty row (-) below each row of homes (h).
+#         This row is used for the delete/action dye buttons.
+#
+#   The GUI size is automatically calculated from the number of layout rows.
+#   Each row = 9 slots. The layout must have between 1 and 6 rows.
+#
+# Placeholders available in item names and lore:
+#   %player%      - The viewer's name
+#   %target%      - The target player's name (when viewing another player's homes)
+#   %index%       - The home number/index
+#   %home%        - The home's custom name (empty string if not set)
+#   %homes_count% - The number of homes the player currently has
+#   %max_homes%   - The maximum number of homes the player is allowed
+#   %page%        - The current page number
+#   %total_pages% - The total number of pages
+
+# Title of the homes GUI
+# Supports placeholders: %page%, %player%, %target%
+title: "Homes • Page %page%"
+
+# Whether to enable multiple pages when there are more homes than slots
+# If false, only the first page worth of homes will be shown
+enabled-multiple-pages: true
+
+# Layout definition
+# # -> Navigation row (DO NOT put anything other than #)
+# - -> Empty slot
+# h -> Home slot (always leave a - row below for the dye/action buttons)
+layout:
+  - "---------"
+  - "--h-h-h--"
+  - "---------"
+  - "-h-h-h-h-"
+  - "---------"
+  - "#########"
+
+# Message shown when the player right-clicks a home to rename it
+home_rename: "&7Type new the home name in chat"
+home_rename_actionbar: "&7Type new the home name in chat"
+
+# Item definitions for the homes GUI
+items:
+  # -------------------------------------------------------
+  # Navigation Arrows (Previous & Next Page)
+  # These are only shown when multiple pages are enabled
+  # and there are enough homes to fill more than one page.
+  # -------------------------------------------------------
+
+  # Slot index for the previous page arrow (in the # navigation row)
+  previous-page-slot: 45
+  # Slot index for the next page arrow (in the # navigation row)
+  next-page-slot: 53
+
+  previous-page:
+    name: '&bPrevious page'
+    lore:
+      - '&7Click to view the previous page.'
+    material: "ARROW"
+
+  next-page:
+    name: '&bNext page'
+    lore:
+      - '&7Click to view the next page.'
+    material: "ARROW"
+
+  # -------------------------------------------------------
+  # No Permission Items
+  # Shown when the player does not have permission for
+  # a home slot (their limit is lower than the slot index).
+  # -------------------------------------------------------
+  no-perm-bed:
+    name: '&cLocked home'
+    lore:
+      - '&fYou need a higher rank for this home'
+    material: "RED_BED"
+
+  no-perm:
+    name: '&cLocked home'
+    lore:
+      - '&fYou need a higher rank for this home'
+    material: "RED_DYE"
+
+  # -------------------------------------------------------
+  # Empty Home Items
+  # Shown when a slot is available but no home is set.
+  # Clicking the bed will set a new home at that slot.
+  # -------------------------------------------------------
+  no-home-bed:
+    name: '&7Empty home slot'
+    lore:
+      - '&bClick &7to save your current location.'
+    material: "LIGHT_GRAY_BED"
+
+  no-home:
+    name: '&7Empty home slot'
+    lore:
+      - '&7Click the bed to create a home.'
+    material: "GRAY_DYE"
+
+  # -------------------------------------------------------
+  # Existing Home Items
+  # Shown when a home is set at this slot.
+  # Left-click the bed to teleport, right-click to rename.
+  # Click the dye to open the delete confirmation GUI.
+  # -------------------------------------------------------
+  tp-home-bed:
+    name: '&bHome %index% &f%home%'
+    lore:
+      - '&bLeft-click &7to teleport.'
+      - '&bRight-click &7to rename.'
+    material: "LIME_BED"
+
+  delete-home:
+    name: '&cDelete home %index%'
+    lore:
+      - '&7Click to review before deleting.'
+    material: "LIME_DYE"
+
+# -------------------------------------------------------
+# Filler Items
+# Decorative items placed in specific slots.
+# These are purely cosmetic and have no click functionality.
+# Uncomment and customize as needed.
+#
+# Available placeholders in filler names and lore:
+#   %player%, %homes_count%, %max_homes%, %page%, %total_pages%
+#
+# You can add as many filler items as you want.
+# -------------------------------------------------------
+#fillers:
+#  - slot: 0
+#    name: "&8• &bExample Item &8•"
+#    lore:
+#      - "&7Example lore line"
+#      - "&7This supports placeholders: %player%"
+#    material: "LIGHT_BLUE_STAINED_GLASS_PANE"
+#
+#  - slot: 8
+#    name: "&8• &bPlaceholder Demo &8•"
+#    lore:
+#      - "&7This shows player info: %player%"
+#    material: "BLUE_STAINED_GLASS_PANE"
+#
+#  - slot: 4
+#    name: "&e%player%'s Statistics"
+#    lore:
+#      - "&7Homes: &b%homes_count%/%max_homes%"
+#      - "&7Current page: &f%page%"
+#    material: "PLAYER_HEAD"
+#
+#  - slot: 49
+#    name: "&cExample Button"
+#    lore:
+#      - "&7Simple example with no placeholders"
+#    material: "BARRIER"

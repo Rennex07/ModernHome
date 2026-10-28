@@ -1,0 +1,82 @@
+# ######################################################
+#                     CONFIRM GUI                      #
+# ######################################################
+# This file controls the delete confirmation GUI layout and items.
+#
+# Layout System:
+#   Each row is a string of 9 characters. Each character represents a slot:
+#     - -> Empty slot (nothing placed here)
+#     d -> Cancel button (deny/decline)
+#     a -> Confirm button (accept)
+#     g -> Go back button (return to homes GUI)
+#     h -> Home display item (shows the home being deleted)
+#
+#   The GUI size is automatically calculated from the number of layout rows.
+#   Each row = 9 slots. The layout must have between 1 and 6 rows.
+#
+# Placeholders available in item names and lore:
+#   %player%      - The viewer's name
+#   %target%      - The target player's name
+#   %index%       - The home number being deleted
+#   %home%        - The home's custom name (empty string if not set)
+#   %homes_count% - Current number of homes
+#   %max_homes%   - Maximum homes allowed
+
+# Title of the confirm delete GUI
+title: "Delete home?"
+
+# Layout definition
+# Each character maps to an item defined below via its 'symbol' property
+gui-disposition:
+  - '---------'
+  - '--d-h-a--'
+  - '----g----'
+
+# Item definitions for the confirm GUI
+items:
+  # Cancel button - cancels the deletion and returns to homes GUI
+  cancel-update:
+    name: '&cCancel'
+    lore:
+      - '&fClick to cancel'
+    material: "RED_STAINED_GLASS_PANE"
+    nbt: "TO_CANCEL"
+    symbol: 'd'
+
+  # Confirm button - confirms the deletion of the home
+  confirm-update:
+    name: '&aConfirm'
+    lore:
+      - '&fClick to delete'
+    material: "LIME_STAINED_GLASS_PANE"
+    nbt: "TO_ACCEPT"
+    symbol: 'a'
+
+  # Go back button - returns to the homes GUI without deleting
+  go-back-update:
+    name: '&7Back to homes'
+    lore:
+      - '&fClick to return'
+    material: "BARRIER"
+    nbt: "TO_BACK"
+    symbol: 'g'
+
+# -------------------------------------------------------
+# Filler Items
+# Decorative items placed in specific slots.
+# These are purely cosmetic and have no click functionality.
+# Uncomment and customize as needed.
+#
+# Available placeholders in filler names and lore:
+#   %player%, %target%, %index%, %home%, %homes_count%, %max_homes%
+#
+# You can add as many filler items as you want.
+# -------------------------------------------------------
+#fillers:
+#  - slot: 4
+#    name: "&8• &bExample Item &8•"
+#    lore:
+#      - "&7Example lore line"
+#      - "&7This supports placeholders: %player%"
+#      - "&7Homes count: %homes_count%"
+#    material: "LIGHT_BLUE_STAINED_GLASS_PANE"

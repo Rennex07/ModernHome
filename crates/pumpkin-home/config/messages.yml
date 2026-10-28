@@ -1,0 +1,69 @@
+# ######################################################
+#                      MESSAGES                        #
+# ######################################################
+# All plugin messages are defined here.
+# You can use color codes (&a, &b, etc.) and hex colors (#FF0000).
+#
+# Available placeholders (context-dependent):
+#   %player%      - The player's name
+#   %target%      - The target player's name (admin commands)
+#   %home%        - The home's custom name (if set)
+#   %index%       - The home number/index
+#   %number%      - Same as %index%
+#   %world%       - The world name
+#   %server%      - The server name (cross-server)
+#   %max_homes%   - Maximum homes the player can have
+#   %homes_count% - Current number of homes the player has
+#   %time%        - Teleport countdown time remaining
+#   %name%        - A name value (e.g., renamed home name)
+
+# Prefix that is prepended to all messages (leave empty for no prefix)
+prefix: "&8[&bHome&8] &7"
+
+player-only: "&cOnly players can use this command!"
+no-permission: "&cYou don't have permission."
+
+home-set: "&aHome saved."
+home-set-admin: "&7Home set for #37A2FF%target%"
+home-set-fail: "&cFailed to save home!"
+home-limit-reached: "&cYou have reached the max number of homes!"
+home-blacklisted-world: "&cYou can't set home in this world!"
+
+home-deleted: "&aHome deleted."
+home-deleted-admin: "&7Home deleted for &f%target%"
+home-delete-fail: "&cFailed to delete home!"
+home-not-exist: "&cHome %index% does not exist!"
+
+home-rename-prompt: "&7Type a new name in chat."
+home-rename-prompt-actionbar: "&7Type a new name in chat."
+home-renamed: "&7You renamed your '%home%' home into '&f%name%&7'."
+home-rename-empty: "&cName cannot be empty!"
+home-rename-trimmed: "&cThis name is too long! Trimmed to 30 characters."
+
+teleport-success: "&aTeleported to your home."
+teleport-success-actionbar: "&aTeleported..."
+teleport-countdown-actionbar: "&bTeleporting in &f%time%s&b..."
+teleport-cancelled-moved: "&cTeleport cancelled because you moved."
+teleport-cancelled-combat: "&cYou are in combat! Teleportation cancelled..."
+teleport-world-not-loaded: "&cHome world is not loaded!"
+
+teleport-cross-server: "&7Teleporting to &f%server%&7..."
+teleport-cross-server-unavailable: "&cCross-server teleport is not available!"
+teleport-cross-server-world-fail: "&cFailed to teleport - world not found!"
+
+admin-reload: "&aPlugin reloaded."
+admin-plugin-not-init: "&cPlugin not initialized."
+admin-unknown-subcommand: "&cUnknown subcommand. Use /ahome help"
+admin-player-not-online: "&cThat player is not online."
+admin-player-not-found: "&cPlayer not found."
+admin-see-usage: "&cUsage: /ahome see <player>"
+admin-osee-usage: "&cUsage: /ahome osee <player>"
+
+admin-help-header: "&b--- AdvancedHome Admin Commands ---"
+admin-help-reload: "&f/ahome reload &7- Reload plugin configs"
+admin-help-help: "&f/ahome help &7- Show this help"
+admin-help-see: "&f/ahome see <player> &7- Open a player's homes (online)"
+admin-help-osee: "&f/ahome osee <player> &7- Open a player's homes (offline)"
+
+delhome-usage: "&cUsage: /delhome <number>"
+delhome-invalid-number: "&cInvalid home number!"

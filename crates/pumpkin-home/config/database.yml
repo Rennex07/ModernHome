@@ -1,0 +1,9 @@
+# Where the plugin's homes are kept, relative to its data folder.
+#
+# The Paper original stored homes in SQLite or MySQL. A Pumpkin plugin runs as a
+# WebAssembly component inside a WASI sandbox that is granted exactly one
+# directory - its own data folder - and neither a SQLite driver nor a MySQL
+# client can be linked into a component, so the homes live in a JSON file here
+# instead. The row shape is the same one the SQL table had.
+store:
+  file: homes.json

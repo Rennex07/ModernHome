@@ -1,0 +1,38 @@
+# ######################################################
+#                  ADVANCEDHOMES CONFIG                #
+# ######################################################
+
+# How long (in seconds) it takes to teleport to a home
+# Players must stand still during this countdown.
+# Players with the home.admin permission bypass this delay.
+teleport-time: 5
+
+# How long (in seconds) a player cannot teleport after taking damage (combat)
+# Set to 0 to disable combat delay entirely.
+combat-delay: 5
+
+# Allow ALL chat messages from the plugin
+# If set to false, the plugin won't send ANY chat messages whatsoever
+allow-chat-messages: true
+
+# Allow ALL actionbar messages from the plugin
+# If set to false, the plugin won't send ANY actionbar messages whatsoever
+allow-actionbar-messages: true
+
+# Blacklisted worlds
+# Players cannot set homes in any of these worlds.
+# World names are case-sensitive and must match exactly.
+blacklisted-worlds:
+  - "spawn"
+
+# The highest home-limit permission this plugin will look for.
+#
+# A player's maximum homes is the largest N for which they hold
+# `advancedhomes.limit.N` (default 1). Pumpkin's permission API has no way to
+# list a player's permissions - only to ask about one node at a time - so the
+# plugin probes 1..=this number and takes the highest one that is granted.
+#
+# The Paper original read the player's whole permission list in one call and so
+# had no such ceiling. Raise this if you grant a limit above it; it costs one
+# permission lookup per GUI open, not per tick.
+home-limit-scan-max: 256

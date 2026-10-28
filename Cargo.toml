@@ -1,0 +1,92 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+# The plugin reports this through `CARGO_PKG_VERSION`, so it has to track the
+# release tag. Keep the two in step when cutting a release.
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+authors = ["Rennex"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# A maintained fork of the archived `serde_yaml`, same API, and it compiles for
+# `wasm32-wasip2` where a dependency on libc would not.
+serde_norway = "0.9"
+serde_json = "1"
+tracing = "0.1"
+
+# BUILD THIS PLUGIN AGAINST THE SAME PUMPKIN COMMIT AS THE SERVER.
+# The published `pumpkin-plugin-api` is behind the server: its WIT no longer
+# matches, and a component built against it fails to load with
+# "type-checking export func `handle-event`". Build against a local checkout
+# instead.
+#
+# A component only loads on a server built from a commit with the same
+# `crates/pumpkin-plugin-wit/v0.1` tree, and the version string cannot be used to
+# check that: Pumpkin kept `0.2.0+26.3-26.51` across a WIT change.
+#
+# The directory is `../Pumpkin` so it matches the workflows' `PUMPKIN_DIR`, which
+# clone the checkout there. A name that does not match makes the build resolve
+# nothing and fail as if the crate were simply absent.
+#
+  # The published `pumpkin-plugin-api` is behind the server: its WIT no longer
+  # matches, and a component built against it fails to load with
+  # "type-checking export func `handle-event`". Build against a local checkout
+  # instead.
+  #
+  # **The path below must resolve to the same commit as the server binary.**
+  # There is no negotiation. The host type-checks a component's exports against
+  # its own WIT when it loads, so a plugin built from the wrong commit is
+  # rejected before `init-plugin` runs - no command registers, no event binds,
+  # and nothing in the plugin is testable.
+  #
+  # `v0.1` is a directory name, not a version contract. Pumpkin edits the
+  # contents of `crates/pumpkin-plugin-wit/v0.1` without renaming it, so "v0.1"
+  # proves nothing, and neither does the version string: both of the commits
+  # below report `0.2.0+26.3-26.51`.
+  #
+  #   official release   tag `0.2.0+26.3-26.51`   204a94ed8   20 Sep
+  #   official release   tag `0.2.1+26.3-26.51`   224f9f814   24 Oct
+  #
+  # They differ by 1,790 lines *inside* the same `v0.1` tree, including two
+  # added fields on `block-burn-event-data`. `handle-event` takes the whole
+  # `Event` enum, so that one changed record breaks every plugin - not only the
+  # ones that use that event.
+  #
+  # This path is a moving checkout, so before trusting any build check what it
+  # actually resolved to:
+  #
+  #   git -C ../Pumpkin rev-parse --short HEAD
+  #
+  # An earlier version of this comment claimed to be "verified against
+  # 204a94ed" while pointing at `../Pumpkin`, which had since moved to master.
+  # The claim went stale silently and cost a day of "the plugin loads but
+  # nothing works". Check the commit, not the version.
+  #
+  # The two lines are source-compatible with each other - the changes were
+  # additive - so switching between them is a change to this path alone and
+  # needs no code change. Verified by building this crate unmodified against
+  # `204a94ed8`: it compiles clean and every test passes.
+  #
+  # To test on the official release, check the release tag out in the sibling
+  # checkout first:
+  #
+  #   git -C ../Pumpkin checkout 204a94ed8
+  #
+  # Bumping to a different Pumpkin release means changing this path, and the
+  # `PUMPKIN_REF` / `WIT_TREE` pins in `.github/workflows`, together.
+[patch.crates-io]
+pumpkin-plugin-api = { path = "../Pumpkin-release/crates/pumpkin-plugin-api" }
+
+# A plugin is a component, not a native library, so the size of the artifact is
+# the thing worth trading build speed for.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

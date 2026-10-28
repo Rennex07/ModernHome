@@ -1,0 +1,4 @@
+# Every home is recorded against the server it was set on, so a port can tell a
+# local home from one that belongs to another server. `server-id` is what this
+# server calls itself in those records; leave it unique per server.
+server-id: server-1

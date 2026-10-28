@@ -1,0 +1,40 @@
+# ######################################################
+#                       SOUNDS                         #
+# ######################################################
+# All plugin sounds are defined here.
+# Each sound entry has three properties:
+#   sound  - The Bukkit Sound enum name (e.g., ENTITY_VILLAGER_NO)
+#            See: https://hub.spigotmc.org/javadocs/bukkit/org/bukkit/Sound.html
+#   volume - Volume of the sound (0.0 to 1.0+)
+#   pitch  - Pitch of the sound (0.5 to 2.0, where 1.0 is normal)
+#
+
+# Played when an error occurs (e.g., no permission, invalid input)
+error:
+  sound: ENTITY_VILLAGER_NO
+  volume: 1
+  pitch: 1
+
+# Played when the homes GUI is opened
+ui-open:
+  sound: BLOCK_NOTE_BLOCK_PLING
+  volume: 1
+  pitch: 1
+
+# Played when a button in the GUI is clicked
+ui-click:
+  sound: UI_BUTTON_CLICK
+  volume: 1
+  pitch: 1
+
+# Played when the player successfully teleports to a home
+teleported:
+  sound: BLOCK_NOTE_BLOCK_PLING
+  volume: 1
+  pitch: 1
+
+# Played each second during the teleport countdown
+timer:
+  sound: BLOCK_NOTE_BLOCK_PLING
+  volume: 1
+  pitch: 2
