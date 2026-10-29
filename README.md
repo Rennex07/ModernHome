@@ -25,3 +25,5 @@ Install `target/wasm32-wasip2/release/pumpkin_home.wasm` in the server's plugin 
 Homes use a JSON file rather than SQL. Redis cross-server transport, EssentialsX import and offline player lookup are not available. GUI behavior depends on Pumpkin's inventory API; the close-screen workaround is Java-client-specific. Existing GUI and message configurations may be reused, but defaults have been restyled.
 
 The pure logic is unit-tested; GUI, teleport and event handling still require an in-game check. On a scratch server, test setting, renaming and deleting a home, teleport countdown and cancellation, admin permissions and a restart. Check the screens with a real client.
+
+See [API-AUDIT.md](API-AUDIT.md) for the 0.2.1 API review and countdown fixes.

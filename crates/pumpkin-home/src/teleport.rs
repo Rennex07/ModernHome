@@ -1,41 +1,7 @@
-//! The countdown before a teleport, and the reasons it can be refused.
+//! Per-viewer teleport countdowns, cancelled by movement or combat.
 //!
-//! ## The cadence, and why 1 and 20
-//!
-//! Paper scheduled an entity timer with a one-tick delay and a twenty-tick period
-//! - `runAtEntityTimer(player, this::tick, 1L, 20L)`. A Pumpkin repeating task
-//! takes the same two numbers and the host honours both: it puts the first run one
-//! `delay` out and then re-arms it `period` ticks later
-//! (`server/scheduler.rs:92-120`), so `schedule_repeating_task(1, 20, tick)` is
-//! the same cadence rather than an approximation of it.
-//!
-//! With the default `teleport-time: 5`, the ticks land on 1, 21, 41, 61, 81 and
-//! 101, so the actionbar shows `5, 4, 3, 2, 1` and the teleport fires on the sixth
-//! one - about 5.05 seconds after the command, not 5.
-//!
-//! ## What cancels it, and how loudly
-//!
-//! Two things, checked in this order and only the first reported:
-//!
-//! - **Movement.** `distanceSquared(start) > 0.5`, or a world change. That is
-//!   roughly 0.71 blocks of Euclidean displacement in three dimensions, and yaw
-//!   and pitch are irrelevant. A player who turns on the spot does not cancel.
-//! - **Combat.** The player was struck within `combat-delay` seconds. The window
-//!   is re-read from the config on every tick, so `/home reload` with a new
-//!   `combat-delay` changes a countdown already in flight.
-//!
-//! Both send the same text to chat *and* to the actionbar - `cancelWithMessage`
-//! sent one string through both channels - and both are silent otherwise: no
-//! sound, and no countdown. A third refusal, the one before the countdown starts,
-//! sends only chat and plays the error sound.
-//!
-//! ## What is not reproduced
-//!
-//! The Paper version called `chunk.load(true)` before each teleport, to make sure
-//! the destination was generated. The plugin API exposes no chunk-loading
-//! function - `Chunk` has only reads and writes - so a home in a chunk that has
-//! never been generated may land the player in the void rather than in a freshly
-//! made column. Nothing else about the teleport differs.
+//! Tasks run one tick after scheduling, then every twenty ticks. The v0.1 API
+//! cannot explicitly preload a destination chunk or report teleport cancellation.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -225,7 +191,9 @@ pub fn live_count() -> usize {
 /// the host for a position.
 #[must_use]
 pub fn snapshot(viewer: &str) -> Option<Countdown> {
-    recover(LIVE.lock()).get(viewer).map(|live| live.state.clone())
+    recover(LIVE.lock())
+        .get(viewer)
+        .map(|live| live.state.clone())
 }
 
 /// Writes back a countdown that has ticked.
@@ -303,9 +271,7 @@ pub fn start(
     world: World,
 ) {
     let viewer = crate::state::uuid_of(player);
-    if let Some(stale) = take(&viewer) {
-        pumpkin_plugin_api::scheduler::cancel_task(stale);
-    }
+    cancel(&viewer);
 
     if crate::permissions::is_admin(server, player) {
         land(player, destination, world);
@@ -321,11 +287,12 @@ pub fn start(
         return;
     }
 
+    let task_viewer = viewer.clone();
     let live = Live {
         task: pumpkin_plugin_api::scheduler::schedule_repeating_task(
             crate::screens::COUNTDOWN_DELAY,
             crate::screens::COUNTDOWN_PERIOD,
-            countdown_tick,
+            move |server| countdown_tick(server, &task_viewer),
         ),
         state: Countdown::new(seconds(config.teleport_time()), player.get_position()),
     };
@@ -368,74 +335,70 @@ pub fn take_destination(viewer: &str) -> Option<(Destination, World)> {
 /// loaded has to be caught *before* this point - which is where
 /// `teleport-world-not-loaded` comes from.
 fn land(player: &Player, destination: Destination, world: World) {
-    player.teleport(destination.position, destination.yaw, destination.pitch, world);
+    player.teleport(
+        destination.position,
+        destination.yaw,
+        destination.pitch,
+        world,
+    );
 }
 
-/// One pass of the countdown task.
-///
-/// The task is registered once and walks whoever is waiting, rather than one task
-/// per teleport. That is a host-economy difference rather than a design one: the
-/// task's own id is what has to be cancelled, and one shared task cancels once.
-///
-/// Three early exits before the decision, in the Paper order:
-///
-/// - a viewer who has gone offline cancels with **no** message, because
-///   `!player.isOnline()` returned before anything was said;
-/// - a countdown that has already finished does nothing;
-/// - the movement and combat checks come from [`Countdown::tick`].
-pub fn countdown_tick(server: Server) {
+/// Advances only the viewer whose repeating task fired.
+pub fn countdown_tick(server: Server, viewer: &str) {
     let config = crate::screens::config();
     let combat_delay = config.combat_delay();
 
-    for viewer in viewers() {
-        // The offline check comes first and cancels silently, so a viewer who has
-        // logged out takes their countdown with them and says nothing.
-        let Some(player) = crate::state::player_of(&server, &viewer) else {
-            drop_viewer(&viewer);
-            continue;
-        };
-        let Some(mut countdown) = snapshot(&viewer) else {
-            continue;
-        };
+    // The offline check comes first and cancels silently, so a viewer who has
+    // logged out takes their countdown with them and says nothing.
+    let Some(player) = crate::state::player_of(&server, viewer) else {
+        cancel(viewer);
+        return;
+    };
+    let Some(mut countdown) = snapshot(viewer) else {
+        return;
+    };
 
-        let now = player.get_position();
-        let combat = crate::state::in_combat(&viewer, combat_delay);
+    let now = player.get_position();
+    let combat = crate::state::in_combat(viewer, combat_delay);
 
-        match countdown.tick(now, combat) {
-            None => continue,
-            Some(Step::Countdown(left)) => {
-                // Message first, then the sound, then the decrement - which is the
-                // order the Java tick used, and why the number shown is the one
-                // still remaining rather than the one about to arrive.
-                crate::screens::show(
-                    &config,
-                    &player,
-                    "teleport-countdown-actionbar",
-                    &[("%time%", left.to_string())],
-                );
-                crate::sounds::play(&config, &player, "timer");
-                countdown.time_left = left - 1;
-                write_back(&viewer, countdown);
-            }
-            Some(Step::Teleport) => {
-                drop_viewer(&viewer);
-                if let Some((destination, world)) = take_destination(&viewer) {
-                    land(&player, destination, world);
-                }
-                crate::screens::say(&config, &player, "teleport-success", &[]);
-                crate::screens::show(&config, &player, "teleport-success-actionbar", &[]);
-                crate::sounds::play(&config, &player, "teleported");
-            }
-            Some(Step::Cancel(reason)) => {
-                drop_viewer(&viewer);
-                let key = match reason {
-                    CancelReason::Moved => "teleport-cancelled-moved",
-                    CancelReason::Combat => "teleport-cancelled-combat",
-                };
-                // Both channels, one string, and no sound - `cancelWithMessage`
-                // wrote to chat and the actionbar and played nothing.
-                crate::screens::announce(&config, &player, key);
-            }
+    match countdown.tick(now, combat) {
+        None => {
+            cancel(viewer);
+        }
+        Some(Step::Countdown(left)) => {
+            // Message first, then the sound, then the decrement - which is the
+            // order the Java tick used, and why the number shown is the one
+            // still remaining rather than the one about to arrive.
+            crate::screens::show(
+                &config,
+                &player,
+                "teleport-countdown-actionbar",
+                &[("%time%", left.to_string())],
+            );
+            crate::sounds::play(&config, &player, "timer");
+            countdown.time_left = left - 1;
+            write_back(viewer, countdown);
+        }
+        Some(Step::Teleport) => {
+            let destination = take_destination(viewer);
+            cancel(viewer);
+            let Some((destination, world)) = destination else {
+                return;
+            };
+            land(&player, destination, world);
+            crate::screens::say(&config, &player, "teleport-success", &[]);
+            crate::screens::show(&config, &player, "teleport-success-actionbar", &[]);
+            crate::sounds::play(&config, &player, "teleported");
+        }
+        Some(Step::Cancel(reason)) => {
+            cancel(viewer);
+            let key = match reason {
+                CancelReason::Moved => "teleport-cancelled-moved",
+                CancelReason::Combat => "teleport-cancelled-combat",
+            };
+            // Both channels, one string, and no sound - `cancelWithMessage`
+            // wrote to chat and the actionbar and played nothing.
+            crate::screens::announce(&config, &player, key);
         }
     }
 }
@@ -448,12 +411,6 @@ pub fn cancel(viewer: &str) {
     if let Some(task) = take(viewer) {
         pumpkin_plugin_api::scheduler::cancel_task(task);
     }
-    recover(DESTINATIONS.lock()).remove(viewer);
-}
-
-/// Forgets a viewer's countdown without cancelling anything.
-fn drop_viewer(viewer: &str) {
-    take(viewer);
     recover(DESTINATIONS.lock()).remove(viewer);
 }
 
@@ -503,8 +460,14 @@ mod tests {
     fn the_countdown_counts_down_and_then_teleports() {
         let mut countdown = Countdown::new(3, (0.0, 0.0, 0.0));
 
-        assert_eq!(countdown.tick((0.0, 0.0, 0.0), false), Some(Step::Countdown(3)));
-        assert_eq!(countdown.tick((0.0, 0.0, 0.0), false), Some(Step::Countdown(3)));
+        assert_eq!(
+            countdown.tick((0.0, 0.0, 0.0), false),
+            Some(Step::Countdown(3))
+        );
+        assert_eq!(
+            countdown.tick((0.0, 0.0, 0.0), false),
+            Some(Step::Countdown(3))
+        );
         // `timeLeft` is only decremented by the caller's own bookkeeping in the
         // Paper tick, after the message is sent, so the number the player sees is
         // the one still remaining - which is why it starts at 5, not at 4.
