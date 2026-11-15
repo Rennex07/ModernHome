@@ -30,7 +30,7 @@ use crate::{config::Config, text};
 /// Renders `key` for delivery, prefix and placeholders included.
 #[must_use]
 pub fn render(config: &Config, key: &str, placeholders: &[(&'static str, String)]) -> String {
-    text::apply(&config.message(key), placeholders)
+    text::decorate(&text::apply(&config.message(key), placeholders))
 }
 
 /// Sends `key` to `player` in chat.
@@ -41,13 +41,24 @@ pub fn render(config: &Config, key: &str, placeholders: &[(&'static str, String)
 /// visible is what lets an admin see which messages a config file controls.
 pub fn chat(config: &Config, player: &Player, key: &str, placeholders: &[(&'static str, String)]) {
     let rendered = render(config, key, placeholders);
-    player.send_system_message(TextComponent::from_legacy_string_with_code(&rendered, text::CODE), false);
+    player.send_system_message(
+        TextComponent::from_legacy_string_with_code(&rendered, text::CODE),
+        false,
+    );
 }
 
 /// Sends `key` to `player` on the actionbar.
-pub fn actionbar(config: &Config, player: &Player, key: &str, placeholders: &[(&'static str, String)]) {
+pub fn actionbar(
+    config: &Config,
+    player: &Player,
+    key: &str,
+    placeholders: &[(&'static str, String)],
+) {
     let rendered = render(config, key, placeholders);
-    player.show_actionbar(TextComponent::from_legacy_string_with_code(&rendered, text::CODE));
+    player.show_actionbar(TextComponent::from_legacy_string_with_code(
+        &rendered,
+        text::CODE,
+    ));
 }
 
 /// The countdown's cancellation, which went to both channels.
@@ -55,7 +66,12 @@ pub fn actionbar(config: &Config, player: &Player, key: &str, placeholders: &[(&
 /// `cancelWithMessage` sent one string through chat and the actionbar. It sent no
 /// sound, and no countdown - the same string was simply both the message and the
 /// reason.
-pub fn cancel(config: &Config, player: &Player, key: &str, placeholders: &[(&'static str, String)]) {
+pub fn cancel(
+    config: &Config,
+    player: &Player,
+    key: &str,
+    placeholders: &[(&'static str, String)],
+) {
     if config.allow_chat() {
         chat(config, player, key, placeholders);
     }
@@ -76,6 +92,16 @@ pub fn placeholders() -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_rendering_applies_hex_colors_and_preserves_unicode() {
+        let mut config = Config::defaults();
+        config.replace(
+            crate::config::Section::Messages,
+            serde_norway::from_str("prefix: ''\nhome-set: 'Café #37A2FFhome'\n").unwrap(),
+        );
+        assert_eq!(render(&config, "home-set", &[]), "Café &x&3&7&a&2&f&fhome");
+    }
 
     #[test]
     fn a_message_is_the_prefix_plus_the_key() {
@@ -108,7 +134,10 @@ mod tests {
     #[test]
     fn a_message_with_no_placeholders_is_just_the_message() {
         let config = Config::defaults();
-        assert_eq!(render(&config, "home-deleted", &[]), "&8[&bHome&8] &7&aHome deleted.");
+        assert_eq!(
+            render(&config, "home-deleted", &[]),
+            "&8[&bHome&8] &7&aHome deleted."
+        );
     }
 
     #[test]
@@ -130,13 +159,15 @@ mod tests {
         let mut config = Config::defaults();
         config.replace(
             crate::config::Section::Messages,
-            serde_norway::from_str(
-                "prefix: \"[%target%] \"\nhome-deleted: \"&cHome deleted.\"\n",
-            )
-            .expect("parses"),
+            serde_norway::from_str("prefix: \"[%target%] \"\nhome-deleted: \"&cHome deleted.\"\n")
+                .expect("parses"),
         );
         assert_eq!(
-            render(&config, "home-deleted", &[("%target%", "Target".to_string())]),
+            render(
+                &config,
+                "home-deleted",
+                &[("%target%", "Target".to_string())]
+            ),
             "[Target] &cHome deleted."
         );
     }

@@ -92,8 +92,6 @@ pub fn play(config: &crate::config::Config, player: &Player, key: &str) {
     player.play_custom_sound(&location, CATEGORY, volume, pitch);
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,7 +108,10 @@ mod tests {
             resource_location("BLOCK_NOTE_BLOCK_PLING"),
             "minecraft:block.note_block.pling"
         );
-        assert_eq!(resource_location("UI_BUTTON_CLICK"), "minecraft:ui.button.click");
+        assert_eq!(
+            resource_location("UI_BUTTON_CLICK"),
+            "minecraft:ui.button.click"
+        );
     }
 
     #[test]

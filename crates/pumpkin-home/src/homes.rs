@@ -24,6 +24,9 @@ pub struct Home {
     /// The world the home was set in, by name, or `null` if it never had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world: Option<String>,
+    /// Dimension identifier, absent in legacy files. Never guessed if ambiguous.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimension: Option<String>,
     #[serde(default)]
     pub x: f64,
     #[serde(default)]
@@ -52,25 +55,41 @@ impl Home {
     pub fn new(
         home_number: i32,
         world: Option<String>,
-        x: f64,
-        y: f64,
-        z: f64,
-        yaw: f32,
-        pitch: f32,
+        position: (f64, f64, f64),
+        rotation: (f32, f32),
         name: Option<String>,
         server_id: Option<String>,
     ) -> Self {
         Self {
             home_number,
             world: world.filter(|w| !w.is_empty()),
-            x,
-            y,
-            z,
-            yaw,
-            pitch,
-            name: name.filter(|n| !n.trim().is_empty()).map(|n| n.trim().to_string()),
+            dimension: None,
+            x: position.0,
+            y: position.1,
+            z: position.2,
+            yaw: rotation.0,
+            pitch: rotation.1,
+            name: name
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| n.trim().to_string()),
             server_id,
         }
+    }
+
+    #[must_use]
+    pub fn in_dimension(mut self, dimension: String) -> Self {
+        self.dimension = Some(dimension);
+        self
+    }
+
+    /// Legacy names may also be dimension identifiers, but must resolve uniquely.
+    pub fn matches_world(&self, name: &str, dimension: &str) -> bool {
+        let named = self.world.as_deref();
+        (named == Some(name) || named == Some(dimension))
+            && self
+                .dimension
+                .as_deref()
+                .is_none_or(|saved| saved == dimension)
     }
 
     /// The custom name, or an empty string when there is none.
@@ -189,7 +208,14 @@ mod tests {
     use super::*;
 
     fn home(number: i32) -> Home {
-        Home::new(number, Some("world".to_string()), 1.0, 2.0, 3.0, 90.0, 0.0, None, None)
+        Home::new(
+            number,
+            Some("world".to_string()),
+            (1.0, 2.0, 3.0),
+            (90.0, 0.0),
+            None,
+            None,
+        )
     }
 
     #[test]
@@ -198,15 +224,40 @@ mod tests {
         // `%home%` then renders empty. Copying that is what keeps the shipped
         // item template's trailing space behaving the same.
         for blank in [None, Some(String::new()), Some("   ".to_string())] {
-            let made = Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, blank, None);
+            let made = Home::new(1, None, (0.0, 0.0, 0.0), (0.0, 0.0), blank, None);
             assert_eq!(made.name, None);
             assert_eq!(made.name_or_empty(), "");
         }
     }
 
     #[test]
+    fn homes_distinguish_dimensions_in_the_same_world_folder() {
+        let row = home(1).in_dimension("minecraft:the_nether".into());
+        assert!(row.matches_world("world", "minecraft:the_nether"));
+        assert!(!row.matches_world("world", "minecraft:overworld"));
+        assert!(!row.matches_world("other", "minecraft:the_nether"));
+    }
+
+    #[test]
+    fn legacy_homes_still_load_but_do_not_disambiguate_dimensions() {
+        let row: Home =
+            serde_json::from_str(r#"{"home_number":1,"world":"world","x":4,"y":64,"z":8}"#)
+                .unwrap();
+        assert_eq!(row.dimension, None);
+        assert!(row.matches_world("world", "minecraft:overworld"));
+        assert!(row.matches_world("world", "minecraft:the_nether"));
+    }
+
+    #[test]
     fn a_name_is_trimmed_and_kept() {
-        let made = Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, Some("  base  ".into()), None);
+        let made = Home::new(
+            1,
+            None,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            Some("  base  ".into()),
+            None,
+        );
         assert_eq!(made.name.as_deref(), Some("base"));
     }
 
@@ -214,20 +265,27 @@ mod tests {
     fn a_home_with_no_server_id_counts_as_local() {
         // Written before cross-server records, so it must not look like a home
         // that belongs to some other server.
-        let local = Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, None, None);
+        let local = Home::new(1, None, (0.0, 0.0, 0.0), (0.0, 0.0), None, None);
         assert!(local.is_local("server-1"));
     }
 
     #[test]
     fn only_the_same_server_id_counts_as_local() {
-        let remote = Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, None, Some("server-2".into()));
+        let remote = Home::new(
+            1,
+            None,
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            None,
+            Some("server-2".into()),
+        );
         assert!(!remote.is_local("server-1"));
         assert!(remote.is_local("server-2"));
     }
 
     #[test]
     fn coordinates_round_like_string_format_for_everything_but_a_half() {
-        let made = Home::new(1, None, 12.5, 70.0, -13.25, 0.0, 0.0, None, None);
+        let made = Home::new(1, None, (12.5, 70.0, -13.25), (0.0, 0.0), None, None);
         // `String.format("%.0f", ...)` rounds half *away from zero*, so 12.5
         // shows as 13 there and as 12 here, because Rust's `{:.0}` rounds half
         // *to even*. A Minecraft coordinate's fractional part can be any float,
@@ -236,7 +294,7 @@ mod tests {
         assert_eq!(made.coordinates(), "12, 70, -13");
 
         // Away from a half the two agree, which is every ordinary coordinate.
-        let ordinary = Home::new(2, None, 12.4, 70.6, -13.7, 0.0, 0.0, None, None);
+        let ordinary = Home::new(2, None, (12.4, 70.6, -13.7), (0.0, 0.0), None, None);
         assert_eq!(ordinary.coordinates(), "12, 71, -14");
     }
 
@@ -244,7 +302,17 @@ mod tests {
     fn a_home_without_a_world_reports_it() {
         // The GUI needs to say "world not loaded" for a cross-server home rather
         // than try to teleport into nothing.
-        assert!(!Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, None, Some("srv".into())).has_world());
+        assert!(
+            !Home::new(
+                1,
+                None,
+                (0.0, 0.0, 0.0),
+                (0.0, 0.0),
+                None,
+                Some("srv".into())
+            )
+            .has_world()
+        );
         assert!(home(1).has_world());
     }
 
@@ -269,11 +337,8 @@ mod tests {
         homes.insert(Home::new(
             1,
             Some("other".into()),
-            9.0,
-            9.0,
-            9.0,
-            0.0,
-            0.0,
+            (9.0, 9.0, 9.0),
+            (0.0, 0.0),
             Some("renamed".into()),
             None,
         ));

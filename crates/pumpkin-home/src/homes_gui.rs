@@ -117,7 +117,12 @@ impl Grid {
 /// be - which matters, because a shorter key that is a *prefix* of a longer one
 /// would otherwise eat it.
 #[must_use]
-pub fn global(config: &Config, session: &Session, homes: &PlayerHomes, pages: usize) -> Vec<Placeholder> {
+pub fn global(
+    config: &Config,
+    session: &Session,
+    homes: &PlayerHomes,
+    pages: usize,
+) -> Vec<Placeholder> {
     let mut out = vec![
         ("%player%", session.viewer_name.clone()),
         ("%target%", session.target_name.clone()),
@@ -126,7 +131,7 @@ pub fn global(config: &Config, session: &Session, homes: &PlayerHomes, pages: us
         ("%total_pages%", pages.to_string()),
         ("%homes_count%", homes.homes.len().to_string()),
     ];
-    out.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    out.sort_by_key(|item| std::cmp::Reverse(item.0.len()));
     let _ = config;
     out
 }
@@ -315,11 +320,8 @@ mod tests {
                 Home::new(
                     number,
                     Some("world".into()),
-                    1.0,
-                    2.0,
-                    3.0,
-                    0.0,
-                    0.0,
+                    (1.0, 2.0, 3.0),
+                    (0.0, 0.0),
                     Some(format!("home{number}")),
                     None,
                 ),
@@ -446,7 +448,10 @@ mod tests {
             Some(Action::Teleport { home: home.clone() }),
             "a shifted click is still a left click"
         );
-        assert_eq!(click(&grid, bed, ClickType::Right), Some(Action::Rename { number: 1 }));
+        assert_eq!(
+            click(&grid, bed, ClickType::Right),
+            Some(Action::Rename { number: 1 })
+        );
         assert_eq!(
             click(&grid, bed, ClickType::ShiftRight),
             Some(Action::Rename { number: 1 })
@@ -491,7 +496,10 @@ mod tests {
             Some(Action::Delete { home: home.clone() })
         );
         // Any click type, not just left: the Paper dye button did not filter.
-        assert_eq!(click(&grid, dye, ClickType::ShiftLeft), Some(Action::Delete { home }));
+        assert_eq!(
+            click(&grid, dye, ClickType::ShiftLeft),
+            Some(Action::Delete { home })
+        );
     }
 
     #[test]
@@ -501,9 +509,18 @@ mod tests {
 
         let bed = grid.home_slots[0];
         let dye = grid.dye_slots[0].expect("paired");
-        assert_eq!(click(&grid, bed, ClickType::Left), Some(Action::Set { number: 1 }));
-        assert_eq!(click(&grid, dye, ClickType::Right), Some(Action::Set { number: 1 }));
-        assert_eq!(click(&grid, bed, ClickType::Middle), Some(Action::Set { number: 1 }));
+        assert_eq!(
+            click(&grid, bed, ClickType::Left),
+            Some(Action::Set { number: 1 })
+        );
+        assert_eq!(
+            click(&grid, dye, ClickType::Right),
+            Some(Action::Set { number: 1 })
+        );
+        assert_eq!(
+            click(&grid, bed, ClickType::Middle),
+            Some(Action::Set { number: 1 })
+        );
     }
 
     #[test]
@@ -549,7 +566,12 @@ mod tests {
         // `i32::MAX` homes over 7 a page is 306,783,379 pages, so the next button
         // never disappears for an admin. Asserted so a change to `total_pages`
         // cannot quietly "fix" this.
-        let grid = plan(&Config::defaults(), &homes_of(&store(0)), &session(i32::MAX), &layout());
+        let grid = plan(
+            &Config::defaults(),
+            &homes_of(&store(0)),
+            &session(i32::MAX),
+            &layout(),
+        );
 
         assert_eq!(grid.total_pages, 306_783_379);
         assert_eq!(grid.next, Some(53));
@@ -576,7 +598,11 @@ mod tests {
 
         let paged = plan(&Config::defaults(), &homes, &session(10), &layout());
         assert_eq!(paged.total_pages, 2);
-        assert_eq!(paged.next, Some(53), "with paging on there is a way forward");
+        assert_eq!(
+            paged.next,
+            Some(53),
+            "with paging on there is a way forward"
+        );
 
         let unpaged = plan(&config, &homes, &session(10), &layout());
         assert_eq!(unpaged.total_pages, 2, "the arithmetic is unchanged");
@@ -656,11 +682,8 @@ mod tests {
                 Home::new(
                     1,
                     Some("other".into()),
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
+                    (0.0, 0.0, 0.0),
+                    (0.0, 0.0),
                     None,
                     Some("elsewhere".into()),
                 ),
@@ -670,7 +693,15 @@ mod tests {
         let homes = homes_of(&store);
         let remote = homes.find(1).cloned().expect("home 1");
 
-        let with_server = home(&Config::defaults(), &session(5), &homes, 1, 1, &remote, "here");
+        let with_server = home(
+            &Config::defaults(),
+            &session(5),
+            &homes,
+            1,
+            1,
+            &remote,
+            "here",
+        );
         assert_eq!(
             with_server
                 .iter()
@@ -682,8 +713,23 @@ mod tests {
 
         // A local home gets none, which is what made the extra "Server:" lore
         // line cross-server only.
-        let local = Home::new(2, Some("world".into()), 0.0, 0.0, 0.0, 0.0, 0.0, None, None);
-        let without = home(&Config::defaults(), &session(5), &homes, 1, 2, &local, "here");
+        let local = Home::new(
+            2,
+            Some("world".into()),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            None,
+            None,
+        );
+        let without = home(
+            &Config::defaults(),
+            &session(5),
+            &homes,
+            1,
+            2,
+            &local,
+            "here",
+        );
         assert!(!without.iter().any(|(key, _)| *key == "%server%"));
     }
 }

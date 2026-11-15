@@ -1,14 +1,7 @@
 //! The homes, on disk.
 //!
-//! ## Why one JSON file
-//!
-//! The Paper original kept homes in SQLite or MySQL. A Pumpkin plugin is a
-//! WebAssembly component inside a WASI sandbox that is granted exactly one
-//! directory - its own data folder - and neither a SQLite driver nor a MySQL
-//! client can be linked into a component. There is no in-process database
-//! either: the plugin API has no storage interface beyond `std::fs`.
-//!
-//! So the homes live in one JSON file, written back whole after every change.
+//! The homes live in one JSON file, atomically replaced after every change.
+//! SQL storage is not implemented in this port.
 //! The shape is the row shape the `player_homes` table had, one key per player
 //! uuid, so a store written by this plugin is readable by eye.
 //!
@@ -29,8 +22,12 @@
 //! cannot undo.
 
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{
+    OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
 
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -106,28 +103,74 @@ impl Store {
     }
 
     /// Writes the file when anything has changed.
-    pub fn save(&mut self) {
+    pub fn save(&mut self) -> io::Result<()> {
         if !self.dirty {
-            return;
+            return Ok(());
         }
         if self.problem {
-            error!(
-                "{} is unreadable, so it is not being overwritten",
-                self.path.display()
-            );
-            return;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "homes could not be loaded; refusing to overwrite them",
+            ));
         }
         let content = File {
             players: self.players.clone(),
         };
-        match serde_json::to_string_pretty(&content) {
-            Ok(text) => {
-                if let Err(error) = std::fs::write(&self.path, text) {
-                    error!("could not write {}: {error}", self.path.display());
-                }
-            }
-            Err(error) => error!("could not serialize the homes: {error}"),
+        let text = serde_json::to_vec_pretty(&content)?;
+        self.replace_file(&text)?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Mutations become visible only when their complete snapshot is saved.
+    pub fn update<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> io::Result<T> {
+        if self.problem {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "homes could not be loaded; changes are disabled",
+            ));
         }
+        let previous = self.players.clone();
+        let dirty = self.dirty;
+        let result = body(self);
+        if let Err(error) = self.save() {
+            self.players = previous;
+            self.dirty = dirty;
+            return Err(error);
+        }
+        Ok(result)
+    }
+
+    fn replace_file(&self, content: &[u8]) -> io::Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let name = self.path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "homes path has no filename")
+        })?;
+        // A stale temporary file is never treated as a valid home store or overwritten.
+        let (temporary, mut file) = loop {
+            let mut temporary_name = name.to_os_string();
+            temporary_name.push(format!(".{}.tmp", NEXT.fetch_add(1, Ordering::Relaxed)));
+            let temporary = self.path.with_file_name(temporary_name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+            {
+                Ok(file) => break (temporary, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        let result = (|| {
+            file.write_all(content)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temporary, &self.path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 
     /// The player's homes, borrowing them in place.
@@ -208,7 +251,11 @@ impl Store {
     /// is not there yields `false` and no message.
     pub fn rename_home(&mut self, uuid: &str, number: i32, name: &str) -> bool {
         self.with_player_mut(uuid, |player| {
-            match player.homes.iter_mut().find(|home| home.home_number == number) {
+            match player
+                .homes
+                .iter_mut()
+                .find(|home| home.home_number == number)
+            {
                 Some(home) => {
                     home.name = (!name.trim().is_empty()).then(|| name.trim().to_string());
                     true
@@ -221,7 +268,9 @@ impl Store {
     /// The slot numbers a player has taken, ascending.
     #[must_use]
     pub fn home_numbers(&self, uuid: &str) -> Vec<i32> {
-        self.homes(uuid).map(PlayerHomes::numbers).unwrap_or_default()
+        self.homes(uuid)
+            .map(PlayerHomes::numbers)
+            .unwrap_or_default()
     }
 
     /// Inserts a batch of rows, ignoring any that already exist.
@@ -274,11 +323,8 @@ mod tests {
         Home::new(
             number,
             Some("world".to_string()),
-            1.0,
-            2.0,
-            3.0,
-            0.0,
-            0.0,
+            (1.0, 2.0, 3.0),
+            (0.0, 0.0),
             None,
             None,
         )
@@ -299,7 +345,7 @@ mod tests {
         let dir = temp();
         let mut first = store(&dir);
         first.set_home("uuid-a", home(1));
-        first.save();
+        first.save().expect("saved");
 
         let mut second = store(&dir);
         second.load();
@@ -310,18 +356,131 @@ mod tests {
     }
 
     #[test]
+    fn successful_save_clears_dirty_and_noop_save_does_not_recreate_the_file() {
+        let dir = temp();
+        let mut store = store(&dir);
+        store.set_home("uuid-a", home(1));
+        store.save().unwrap();
+        assert!(!store.dirty);
+        std::fs::remove_file(&store.path).unwrap();
+        store.save().unwrap();
+        assert!(!store.path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_transactions_roll_back_set_rename_and_delete() {
+        let dir = temp();
+        let mut store = store(&dir);
+        store
+            .update(|store| store.set_home("uuid-a", home(1)))
+            .unwrap();
+        let original = std::fs::read(&store.path).unwrap();
+        let original_path = store.path.clone();
+        store.path = dir.join("blocked");
+        std::fs::create_dir(&store.path).unwrap();
+        assert!(
+            store
+                .update(|store| store.set_home("uuid-a", home(2)))
+                .is_err()
+        );
+        assert_eq!(store.home_numbers("uuid-a"), vec![1]);
+        assert!(
+            store
+                .update(|store| store.rename_home("uuid-a", 1, "new name"))
+                .is_err()
+        );
+        assert_eq!(store.homes("uuid-a").unwrap().find(1).unwrap().name, None);
+        assert!(
+            store
+                .update(|store| store.delete_home("uuid-a", 1))
+                .is_err()
+        );
+        assert_eq!(store.home_numbers("uuid-a"), vec![1]);
+        assert_eq!(std::fs::read(original_path).unwrap(), original);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            2,
+            "failed temporary files are removed"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn repeated_atomic_replacements_preserve_dimensions_and_names() {
+        let dir = temp();
+        let mut store = store(&dir);
+        let row = home(1).in_dimension("minecraft:the_nether".into());
+        store.update(|store| store.set_home("uuid-a", row)).unwrap();
+        store
+            .update(|store| store.rename_home("uuid-a", 1, "Café"))
+            .unwrap();
+        let mut loaded = self::store(&dir);
+        loaded.load();
+        let loaded_home = loaded.homes("uuid-a").unwrap().find(1).unwrap();
+        assert_eq!(loaded_home.name.as_deref(), Some("Café"));
+        assert_eq!(
+            loaded_home.dimension.as_deref(),
+            Some("minecraft:the_nether")
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn interrupted_write_files_do_not_replace_the_valid_store() {
+        let dir = temp();
+        let mut store = store(&dir);
+        store
+            .update(|store| store.set_home("uuid-a", home(1)))
+            .unwrap();
+        let stale = dir.join("homes.json.0.tmp");
+        std::fs::write(&stale, "incomplete snapshot").unwrap();
+        let mut loaded = self::store(&dir);
+        loaded.load();
+        assert_eq!(loaded.home_numbers("uuid-a"), vec![1]);
+        loaded
+            .update(|store| store.rename_home("uuid-a", 1, "safe"))
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(stale).unwrap(),
+            "incomplete snapshot"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_store_refuses_transaction_before_mutating() {
+        let dir = temp();
+        let mut store = store(&dir);
+        std::fs::write(&store.path, "broken").unwrap();
+        store.load();
+        assert!(
+            store
+                .update(|store| store.set_home("uuid-a", home(1)))
+                .is_err()
+        );
+        assert_eq!(store.player_count(), 0);
+        assert_eq!(std::fs::read_to_string(&store.path).unwrap(), "broken");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn nothing_is_written_until_something_changes() {
         let dir = temp();
         let mut store = store(&dir);
         store.set_home("uuid-a", home(1));
-        store.save();
+        store.save().expect("saved");
         let after_first = std::fs::read_to_string(store.path.clone()).expect("written");
 
         // A no-op read must not touch the file, or every save would rewrite it
         // and an mtime-based backup would fire on nothing.
         store.with_player("uuid-a", |_| ());
-        store.save();
-        assert_eq!(std::fs::read_to_string(store.path.clone()).expect("still there"), after_first);
+        store.save().expect("unchanged");
+        assert_eq!(
+            std::fs::read_to_string(store.path.clone()).expect("still there"),
+            after_first
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -336,8 +495,11 @@ mod tests {
         assert!(store.has_problem(), "a refused parse is reported");
         // An insert is refused rather than saved over the top of it.
         store.set_home("uuid-a", home(1));
-        store.save();
-        assert_eq!(std::fs::read_to_string(&path).expect("untouched"), "{ not json");
+        assert!(store.save().is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("untouched"),
+            "{ not json"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -361,7 +523,10 @@ mod tests {
         store.set_home("uuid-a", home(2));
         assert!(store.rename_home("uuid-a", 2, "  base  "));
         assert_eq!(
-            store.homes("uuid-a").and_then(|p| p.find(2)).and_then(|h| h.name.clone()),
+            store
+                .homes("uuid-a")
+                .and_then(|p| p.find(2))
+                .and_then(|h| h.name.clone()),
             Some("base".to_string())
         );
         assert!(!store.rename_home("uuid-a", 9, "nope"));
@@ -377,7 +542,11 @@ mod tests {
         store.set_home("uuid-a", home(1));
         assert!(store.rename_home("uuid-a", 1, "   "));
         assert_eq!(
-            store.homes("uuid-a").and_then(|p| p.find(1)).expect("home").name,
+            store
+                .homes("uuid-a")
+                .and_then(|p| p.find(1))
+                .expect("home")
+                .name,
             None
         );
         let _ = std::fs::remove_dir_all(&dir);

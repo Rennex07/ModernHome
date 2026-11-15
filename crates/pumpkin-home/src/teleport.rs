@@ -82,6 +82,7 @@ pub fn has_moved(from: (f64, f64, f64), to: (f64, f64, f64)) -> bool {
 pub struct Countdown {
     /// The position the countdown was started from.
     pub started_at: (f64, f64, f64),
+    pub started_world: Option<(String, String)>,
     /// Seconds left before the teleport.
     pub time_left: i32,
     /// Whether this countdown has already finished or been cancelled.
@@ -94,9 +95,39 @@ impl Countdown {
     pub fn new(seconds: i32, from: (f64, f64, f64)) -> Self {
         Self {
             started_at: from,
+            started_world: None,
             time_left: seconds.max(0),
             finished: false,
         }
+    }
+
+    #[must_use]
+    pub fn in_world(mut self, name: String, dimension: String) -> Self {
+        self.started_world = Some((name, dimension));
+        self
+    }
+
+    pub fn tick_in_world(
+        &mut self,
+        now: (f64, f64, f64),
+        combat: bool,
+        name: &str,
+        dimension: &str,
+    ) -> Option<Step> {
+        if self.finished {
+            return None;
+        }
+        if self
+            .started_world
+            .as_ref()
+            .is_some_and(|(start_name, start_dimension)| {
+                start_name != name || start_dimension != dimension
+            })
+        {
+            self.finished = true;
+            return Some(Step::Cancel(CancelReason::Moved));
+        }
+        self.tick(now, combat)
     }
 
     /// Runs one tick against the player's current position.
@@ -294,7 +325,10 @@ pub fn start(
             crate::screens::COUNTDOWN_PERIOD,
             move |server| countdown_tick(server, &task_viewer),
         ),
-        state: Countdown::new(seconds(config.teleport_time()), player.get_position()),
+        state: Countdown::new(seconds(config.teleport_time()), player.get_position()).in_world(
+            player.get_world().get_name(),
+            player.get_world().get_dimension(),
+        ),
     };
     // The destination is recorded here rather than by the caller, because `world`
     // is consumed by the teleport on both the admin path above and the last tick
@@ -361,7 +395,8 @@ pub fn countdown_tick(server: Server, viewer: &str) {
     let now = player.get_position();
     let combat = crate::state::in_combat(viewer, combat_delay);
 
-    match countdown.tick(now, combat) {
+    let world = player.get_world();
+    match countdown.tick_in_world(now, combat, &world.get_name(), &world.get_dimension()) {
         None => {
             cancel(viewer);
         }
@@ -417,6 +452,28 @@ pub fn cancel(viewer: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_world_or_dimension_cancels_even_at_identical_coordinates() {
+        for (name, dimension) in [
+            ("world", "minecraft:the_nether"),
+            ("other", "minecraft:overworld"),
+        ] {
+            let mut countdown = Countdown::new(0, (1.0, 64.0, 2.0))
+                .in_world("world".into(), "minecraft:overworld".into());
+            assert_eq!(
+                countdown.tick_in_world((1.0, 64.0, 2.0), false, name, dimension),
+                Some(Step::Cancel(CancelReason::Moved))
+            );
+            assert!(countdown.finished);
+        }
+        let mut countdown = Countdown::new(0, (1.0, 64.0, 2.0))
+            .in_world("world".into(), "minecraft:overworld".into());
+        assert_eq!(
+            countdown.tick_in_world((1.0, 64.0, 2.0), false, "world", "minecraft:overworld"),
+            Some(Step::Teleport)
+        );
+    }
 
     /// 0.5 blocks away in any direction is the threshold, so just under it is a
     /// no-op and just over it cancels.

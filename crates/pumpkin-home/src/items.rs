@@ -119,13 +119,19 @@ pub fn component(rendered: &str) -> TextComponent {
 
     let all_codes = runs.iter().all(|(is_code, _)| *is_code);
     if all_codes {
-        return plain(TextComponent::from_legacy_string_with_code(rendered, text::CODE));
+        return plain(TextComponent::from_legacy_string_with_code(
+            rendered,
+            text::CODE,
+        ));
     }
 
     let mut root = TextComponent::text("");
     for (is_code, piece) in runs {
         root = if is_code {
-            root.add_child(TextComponent::from_legacy_string_with_code(&piece, text::CODE))
+            root.add_child(TextComponent::from_legacy_string_with_code(
+                &piece,
+                text::CODE,
+            ))
         } else {
             root.add_text(&piece)
         };
@@ -271,7 +277,10 @@ mod tests {
             ("RED_DYE", "minecraft:red_dye"),
             ("ARROW", "minecraft:arrow"),
             ("RED_STAINED_GLASS_PANE", "minecraft:red_stained_glass_pane"),
-            ("LIME_STAINED_GLASS_PANE", "minecraft:lime_stained_glass_pane"),
+            (
+                "LIME_STAINED_GLASS_PANE",
+                "minecraft:lime_stained_glass_pane",
+            ),
             ("BARRIER", "minecraft:barrier"),
             ("PAPER", "minecraft:paper"),
             ("STONE", "minecraft:stone"),

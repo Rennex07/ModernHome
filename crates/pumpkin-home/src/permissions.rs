@@ -50,8 +50,8 @@
 //! `advancedhomes.limit.N`. The Pumpkin API has no way to list a player's
 //! permissions - only to ask about one node at a time - so the limit is found by
 //! asking about each candidate from 1 up to `home-limit-scan-max`. That is one
-//! host call per candidate, which is why it is resolved once per GUI open and
-//! cached in the session, rather than per decorate.
+//! host call per candidate. The result is refreshed before menu actions so an
+//! already-open screen cannot retain a revoked limit.
 //!
 //! ## Placeholders are not PumpkinPIE's to resolve
 //!
@@ -80,6 +80,25 @@ pub fn is_admin(server: &Server, player: &Player) -> bool {
         return true;
     }
     server.get_op_manager().is_op(player.get_id())
+}
+
+/// Rechecked at each GUI action and when a pending chat rename is submitted.
+pub fn can_manage(server: &Server, player: &Player, target: &str) -> bool {
+    let own = crate::state::uuid_of(player) == target;
+    let root = if own {
+        crate::USE_HOME
+    } else {
+        crate::USE_ADMIN
+    };
+    access_allowed(
+        own,
+        player.has_permission(root),
+        !own && is_admin(server, player),
+    )
+}
+
+fn access_allowed(own: bool, root: bool, admin: bool) -> bool {
+    root && (own || admin)
 }
 
 /// The most homes `player` may have.
@@ -139,6 +158,15 @@ pub fn next_slot(taken: &[i32], limit: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_root_or_admin_access_is_not_kept_by_an_open_menu() {
+        assert!(access_allowed(true, true, false));
+        assert!(!access_allowed(true, false, false));
+        assert!(access_allowed(false, true, true));
+        assert!(!access_allowed(false, true, false));
+        assert!(!access_allowed(false, false, true));
+    }
 
     #[test]
     fn the_page_count_is_rounded_up_never_down() {
