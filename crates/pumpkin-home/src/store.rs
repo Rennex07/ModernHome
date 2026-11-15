@@ -1,6 +1,6 @@
 //! The homes, on disk.
 //!
-//! The homes live in memory and are written out by one of two backends:
+//! The homes live in memory and are written out by one of three backends:
 //!
 //! * `json` - one JSON file, atomically replaced after every change. This is
 //!   the default, and the shape is the row shape the `player_homes` table had,
@@ -9,19 +9,19 @@
 //! * `sqlite` - a SQLite database with one row per home, keyed by player uuid
 //!   and slot number. Only the players that changed are rewritten, in one
 //!   transaction, so a save never touches a row it did not mean to change.
+//! * `mysql` / `mariadb` - a remote InnoDB table, with transactional writes for
+//!   changed players.
 //!
-//! Which one is used is decided by `database.yml`. The JSON file and the SQLite
-//! database are two different files: switching between them does not move the
-//! homes, and the old file is left exactly as it was.
+//! Which one is used is decided by `database.yml`. Switching backends does not
+//! migrate homes.
 //!
 //! ## There is no separate cache
 //!
 //! `HomeManager` kept a 60-second TTL cache, because the SQL table was shared
 //! with every other server on the proxy and could change underneath it. Nothing
-//! else writes this file, so the in-memory map *is* the cache and there is
-//! nothing for it to be stale against. That is also why a port can answer
-//! `/sethome`'s duplicate scan synchronously, where the Paper plugin had to open
-//! a connection on the main thread to do it.
+//! else should write this database: every backend supports one plugin instance.
+//! The in-memory map is not refreshed from external writes. The plugin can answer
+//! `/sethome`'s duplicate scan without querying the database.
 //!
 //! ## A file that fails to parse is refused, not repaired
 //!

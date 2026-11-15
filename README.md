@@ -4,9 +4,8 @@ A Pumpkin Wasm port of [AdvancedHome](https://github.com/Rennex07/AdvancedHome).
 
 ## Build
 
-The plugin targets the **v0.2 plugin API** and is built for **WASIp3**. The v0.2
-API is the one that runs on a Pumpkin built with the `plugin-v0_2` feature, and
-WASIp3 is the WASI version that API's host links.
+This is an **unreleased preview** targeting the **v0.2 plugin API** and
+**WASIp3**. Release testing is pending an official Pumpkin build with that API.
 
 The v0.2 SDK is not published yet, so the crate pins it to the exact upstream
 commit that carries it (upstream PR #3962). A component only loads on a server
@@ -52,6 +51,8 @@ Use `--features sqlite,mysql` to build all storage backends.
 Build with `--features mysql` and set `storage: mysql` or `storage: mariadb`
 in `database.yml`. Both names use the `mysql` configuration section.
 Create the database and a dedicated account first; the plugin creates its table.
+Existing tables must use InnoDB. The connection enables strict SQL writes so
+oversized values fail instead of being silently truncated.
 The host must grant `network.tcp.connect` and `network.dns`.
 
 The client supports `mysql_native_password` and the cached fast path of
@@ -60,9 +61,15 @@ authentication plugins are not implemented. Queries and results are unencrypted;
 use a trusted network or an authenticated TLS tunnel. A server requiring
 unsupported authentication is refused, not downgraded.
 
-MariaDB 11.8.3 has been exercised through WASIp3 in Wasmtime 50. MySQL itself
+MariaDB 11.8.3 persistence and rollback have been exercised through WASIp3 in
+Wasmtime 50. Native integration tests also cover oversized writes and rejection
+of non-transactional tables. MySQL itself
 and database access inside a Pumpkin callback remain unverified. This backend
 is not ready for a production release.
+
+Database writes are synchronous and serialized with home-state access. A slow
+database can delay callbacks; five-second socket timeouts are per I/O operation,
+not a deadline for the whole save.
 
 When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome`.
 

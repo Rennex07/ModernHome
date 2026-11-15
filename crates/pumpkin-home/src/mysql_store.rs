@@ -52,7 +52,16 @@ impl MySql {
     ) -> Result<Self, Error> {
         let table = identifier(table)?;
         let mut client = Client::connect(host, port, user, password, database)?;
+        // Preserve the administrator's SQL modes while making truncation an error.
+        client
+            .execute("SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',STRICT_ALL_TABLES')")?;
         client.execute(&create_table(&table))?;
+        let engines = client.query(&format!(
+            "SELECT ENGINE FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {}",
+            quote(&table)
+        ))?;
+        require_innodb(&engines)?;
         Ok(Self { client, table })
     }
 
@@ -181,6 +190,21 @@ fn nullable(value: &Option<String>) -> String {
     value.as_deref().map_or_else(|| "NULL".into(), quote)
 }
 
+fn require_innodb(rows: &[crate::mysql::Row]) -> Result<(), Error> {
+    if rows.len() == 1
+        && rows[0].len() == 1
+        && rows[0][0]
+            .as_deref()
+            .is_some_and(|engine| engine.eq_ignore_ascii_case("InnoDB"))
+    {
+        Ok(())
+    } else {
+        Err(Error::Protocol(
+            "the homes table must use InnoDB for transactional saves".into(),
+        ))
+    }
+}
+
 fn number<T: std::str::FromStr>(value: &Option<String>) -> Result<T, Error> {
     value
         .as_deref()
@@ -196,7 +220,9 @@ fn number<T: std::str::FromStr>(value: &Option<String>) -> Result<T, Error> {
 fn identifier(table: &str) -> Result<String, Error> {
     let trimmed = table.trim();
     if trimmed.is_empty() || trimmed.len() > 64 {
-        return Err(Error::Protocol("the table name is empty".to_string()));
+        return Err(Error::Protocol(
+            "the table name must contain between 1 and 64 characters".to_string(),
+        ));
     }
     if !trimmed
         .chars()
@@ -228,6 +254,14 @@ mod tests {
         let table = format!("modernhome_test_{}", std::process::id());
         let mut client = Client::connect(&host, port, &user, &password, &database).unwrap();
         let mut store = MySql::open(&host, port, &user, &password, &database, &table).unwrap();
+        let modes = store.client.query("SELECT @@SESSION.sql_mode").unwrap();
+        assert!(
+            modes[0][0]
+                .as_deref()
+                .unwrap()
+                .split(',')
+                .any(|mode| mode == "STRICT_ALL_TABLES")
+        );
         let mut home = Home::new(
             1,
             Some("world".into()),
@@ -262,12 +296,24 @@ mod tests {
         let trigger = format!("{table}_reject");
         client.execute(&format!("CREATE TRIGGER `{trigger}` BEFORE INSERT ON `{table}` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test rollback'")).unwrap();
         assert!(store.write(&touched, &players).is_err());
-        assert_eq!(store.read_all().unwrap()["uuid-test"].homes, vec![home]);
+        assert_eq!(
+            store.read_all().unwrap()["uuid-test"].homes,
+            vec![home.clone()]
+        );
         client
             .execute(&format!("DROP TRIGGER `{trigger}`"))
             .unwrap();
+        let mut oversized = players.clone();
+        oversized.get_mut("uuid-test").unwrap().homes[0].name = Some("x".repeat(70_000));
+        assert!(store.write(&touched, &oversized).is_err());
+        assert_eq!(store.read_all().unwrap()["uuid-test"].homes, vec![home]);
         store.write(&touched, &BTreeMap::new()).unwrap();
         assert!(store.read_all().unwrap().is_empty());
+        drop(store);
+        client
+            .execute(&format!("ALTER TABLE `{table}` ENGINE=MyISAM"))
+            .unwrap();
+        assert!(MySql::open(&host, port, &user, &password, &database, &table).is_err());
         client.execute(&format!("DROP TABLE `{table}`")).unwrap();
     }
 
@@ -365,5 +411,19 @@ mod tests {
             identifier("modernhome_homes").expect("a name is kept"),
             "modernhome_homes"
         );
+    }
+
+    #[test]
+    fn transactional_storage_requires_exactly_one_innodb_table() {
+        assert!(require_innodb(&[vec![Some("InnoDB".into())]]).is_ok());
+        assert!(require_innodb(&[vec![Some("innodb".into())]]).is_ok());
+        for rows in [
+            vec![],
+            vec![vec![Some("MyISAM".into())]],
+            vec![vec![None]],
+            vec![vec![Some("InnoDB".into())], vec![Some("InnoDB".into())]],
+        ] {
+            assert!(require_innodb(&rows).is_err());
+        }
     }
 }

@@ -160,6 +160,9 @@ impl Client {
             ));
         }
         let greeting = self.read_packet()?;
+        if greeting.first() == Some(&0xff) {
+            return Err(server_error(&greeting));
+        }
         let handshake = Handshake::parse(&greeting)?;
         if handshake.capabilities & CAPABILITIES != CAPABILITIES {
             return Err(Error::Protocol(
@@ -197,7 +200,7 @@ impl Client {
         for _ in 0..8 {
             let packet = self.read_packet()?;
             match packet.first() {
-                Some(0x00) => return Ok(()),
+                Some(0x00) => return validate_ok(&packet),
                 Some(0xff) => return Err(server_error(&packet)),
                 Some(0xfe) => {
                     // An authentication switch: the server wants a different
@@ -253,25 +256,32 @@ impl Client {
 
         let packet = self.read_packet()?;
         match packet.first() {
-            Some(0x00) => Ok(Vec::new()),
+            Some(0x00) => {
+                validate_ok(&packet)?;
+                Ok(Vec::new())
+            }
             Some(0xff) => Err(server_error(&packet)),
             Some(0xfb) => Err(Error::Protocol("LOCAL INFILE is not supported".to_string())),
             _ => {
                 let mut cursor = 0;
-                let columns = read_lenenc(&packet, &mut cursor)? as usize;
-                if columns == 0 || columns > 256 {
+                let columns = read_lenenc(&packet, &mut cursor)?;
+                if columns == 0 || columns > 256 || cursor != packet.len() {
                     return Err(Error::Protocol("invalid result column count".into()));
                 }
+                let columns = columns as usize;
                 // The column definitions, which this client does not need: the
                 // text protocol says what each column is, but the rows carry
                 // the same order.
                 for _ in 0..columns {
-                    self.read_packet()?;
+                    let definition = self.read_packet()?;
+                    if definition.first() == Some(&0xff) {
+                        return Err(server_error(&definition));
+                    }
                 }
                 // The end of the column definitions. This client does not ask
                 // for `CLIENT_DEPRECATE_EOF`, so the server sends an EOF
                 // packet here rather than an OK packet.
-                self.read_packet()?;
+                validate_eof(&self.read_packet()?)?;
 
                 let mut rows = Vec::new();
                 let mut result_bytes = 0usize;
@@ -283,7 +293,10 @@ impl Client {
                     }
                     match packet.first() {
                         Some(0xff) => return Err(server_error(&packet)),
-                        Some(0xfe) if packet.len() < 9 => break,
+                        Some(0xfe) if packet.len() < 9 => {
+                            validate_eof(&packet)?;
+                            break;
+                        }
                         _ => {
                             let mut cursor = 0;
                             let mut row = Vec::with_capacity(columns);
@@ -294,6 +307,11 @@ impl Client {
                                     continue;
                                 }
                                 row.push(Some(read_lenenc_string(&packet, &mut cursor)?));
+                            }
+                            if cursor != packet.len() {
+                                return Err(Error::Protocol(
+                                    "trailing data in database row".into(),
+                                ));
                             }
                             rows.push(row);
                         }
@@ -570,6 +588,37 @@ fn truncated() -> Error {
     Error::Protocol("truncated database packet".into())
 }
 
+/// Confirm completion before treating a statement (especially COMMIT) as saved.
+fn validate_ok(packet: &[u8]) -> Result<(), Error> {
+    if packet.first() != Some(&0x00) {
+        return Err(Error::Protocol("expected database OK packet".into()));
+    }
+    let mut cursor = 1;
+    read_lenenc(packet, &mut cursor)?; // affected rows
+    read_lenenc(packet, &mut cursor)?; // last insert id
+    let status = packet.get(cursor..cursor + 4).ok_or_else(truncated)?;
+    validate_status(u16::from_le_bytes([status[0], status[1]]))
+}
+
+fn validate_eof(packet: &[u8]) -> Result<(), Error> {
+    if packet.first() == Some(&0xff) {
+        return Err(server_error(packet));
+    }
+    if packet.first() != Some(&0xfe) || packet.len() != 5 {
+        return Err(Error::Protocol("expected database EOF packet".into()));
+    }
+    validate_status(u16::from_le_bytes([packet[3], packet[4]]))
+}
+
+fn validate_status(status: u16) -> Result<(), Error> {
+    if status & 0x0008 != 0 {
+        return Err(Error::Protocol(
+            "multiple database results are not supported".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -637,13 +686,20 @@ pub(crate) mod testing {
                 let _ = sender.send(sql.clone());
 
                 if sql.starts_with("SELECT") {
-                    let columns = rows.first().map_or(0, |row| row.len());
+                    let engine_rows = vec![vec![Some("InnoDB".to_string())]];
+                    let result = if sql.starts_with("SELECT ENGINE FROM information_schema.TABLES")
+                    {
+                        &engine_rows
+                    } else {
+                        &rows
+                    };
+                    let columns = result.first().map_or(0, |row| row.len());
                     write_packet(&mut stream, &[columns as u8]);
                     for _ in 0..columns {
                         write_packet(&mut stream, b"column");
                     }
                     write_packet(&mut stream, &[0xfe, 0x00, 0x00, 0x02, 0x00]);
-                    for row in &rows {
+                    for row in result {
                         let mut packet = Vec::new();
                         for value in row {
                             match value {
@@ -795,6 +851,30 @@ mod tests {
     }
 
     #[test]
+    fn statement_completion_requires_a_complete_ok_packet() {
+        let ok = [0, 0, 0, 2, 0, 0, 0];
+        for length in 0..ok.len() {
+            assert!(validate_ok(&ok[..length]).is_err());
+        }
+        assert!(validate_ok(&ok).is_ok());
+        assert!(validate_ok(&[0, 0, 0, 8, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn result_completion_requires_a_complete_eof_packet() {
+        let eof = [0xfe, 0, 0, 2, 0];
+        for length in 0..eof.len() {
+            assert!(validate_eof(&eof[..length]).is_err());
+        }
+        assert!(validate_eof(&eof).is_ok());
+        assert!(validate_eof(&[0xfe, 0, 0, 8, 0]).is_err());
+        assert!(matches!(
+            validate_eof(&[0xff, 1, 0]),
+            Err(Error::Server { .. })
+        ));
+    }
+
+    #[test]
     fn a_server_that_answers_nonsense_is_refused() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("the mock server binds");
         let address = listener
@@ -808,8 +888,8 @@ mod tests {
         let error = Client::connect(&address.ip().to_string(), address.port(), "u", "p", "d")
             .expect_err("the greeting is refused");
         assert!(
-            matches!(error, Error::Protocol(_)),
-            "the refusal is a protocol error, not a panic"
+            matches!(error, Error::Server { code: 1040, .. }),
+            "the greeting preserves the server error"
         );
     }
 }
