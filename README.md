@@ -22,8 +22,7 @@ Use the Rust 1.100.0 toolchain pinned in `rust-toolchain.toml` and fetch depende
 with `cargo fetch --locked` before an offline build.
 
 A server built from released Pumpkin cannot load this plugin: the released
-builds leave the v0.2 API off, and the v0.1 API only accepts WASIp2. See
-[API-AUDIT.md](API-AUDIT.md).
+builds leave the v0.2 API off, and the v0.1 API only accepts WASIp2.
 
 ### The SQLite backend
 
@@ -115,5 +114,3 @@ cargo test --features mysql real_database_round_trip_and_rollback -- --ignored
 ```
 
 The pure logic is unit-tested; GUI, teleport and event handling still require an in-game check. On a scratch server, test setting, renaming and deleting a home, teleport countdown and cancellation, admin permissions and a restart. Check the screens with a real client.
-
-See [API-AUDIT.md](API-AUDIT.md) for the 0.2.1 API review and countdown fixes.
