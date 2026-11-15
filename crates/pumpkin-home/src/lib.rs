@@ -1,36 +1,16 @@
-//! `PumpkinHome`, a homes plugin for Pumpkin.
+//! ModernHome, a homes plugin for Pumpkin.
 //!
-//! A port of AdvancedHome from Paper to a Pumpkin plugin: the same commands, the
-//! same two screens, the same messages, the same sounds, and the same rules about
-//! when a teleport may be refused. The screens are rebuilt from the same layout
-//! files, so a server moving over keeps its configuration.
+//! This port provides home-management commands and two configurable inventory
+//! screens. Homes are stored as JSON; SQL storage, Redis transport, offline player
+//! lookup and EssentialsX import are not implemented. The host has permission-
+//! controlled networking, but this plugin does not use it.
 //!
-//! ## What the host cannot do, and what was done instead
+//! Home destinations include both the world folder and dimension. Legacy records
+//! without a dimension are refused when their destination is ambiguous.
 //!
-//! Every item here was read out of the host's source rather than assumed. Four
-//! things in the Paper plugin are not reachable from a WebAssembly component, and
-//! each is named here rather than left to be discovered.
-//!
-//! - **No SQL.** The sandbox is granted exactly one directory - the plugin's own
-//!   data folder (`wasm_host/mod.rs:382-394`) - and neither a SQLite driver nor a
-//!   MySQL client can be linked into a component. The homes live in one JSON file.
-//!   See [`store`].
-//! - **No Redis.** The plugin world imports no socket interface
-//!   (`pumpkin-plugin-wit/v0.1/plugin.wit`), so `wasi:sockets` is not in the
-//!   component and a pub/sub client cannot be written against it. `server-id` and
-//!   the `server_id` column survive, so a home still records which server it
-//!   belongs to and a cross-server home still reports itself as one; what is gone
-//!   is the transport. See [`permissions`] and [`teleport`].
-//! - **No EssentialsX import.** `plugins/Essentials/userdata` is outside the one
-//!   preopened directory, so `migrate-from-essentialsx` has no counterpart and is
-//!   gone from `config.yml`.
-//! - **No closing a screen.** There is no `Player::close_inventory`, so where Paper
-//!   closed the screen before teleporting, renaming or confirming a delete, this
-//!   does not. The client closes it when the next screen opens.
-//!
-//! Two smaller ones: `Player::is_op` does not exist (the op manager answers it), and
-//! a chunk cannot be pre-loaded before a teleport, so a home in a column that has
-//! never been generated may arrive in the void.
+//! The API has no close-inventory method; [`screens::close_screen`] uses a Java
+//! packet workaround. Bedrock viewers close the screen themselves. Teleports have
+//! no explicit success/cancellation result or destination chunk preload API.
 //!
 //! ## The screen identity problem
 //!
@@ -74,7 +54,7 @@ pub mod teleport;
 pub mod text;
 
 /// The plugin name, and therefore the only permission namespace it may register.
-pub const PLUGIN: &str = "pumpkinhome";
+pub const PLUGIN: &str = "ModernHome";
 
 /// `/home` and its aliases.
 ///
@@ -93,7 +73,7 @@ const ADMIN: [&str; 1] = ["ahome"];
 ///
 /// `register_command` attaches exactly one node to the whole tree and **prefixes it
 /// with the plugin name if it has no colon** (`plugin/api/context.rs:202-206`). An
-/// empty node would therefore become `pumpkinhome:`, which is in no registry, which
+/// empty node would therefore become `ModernHome:`, which is in no registry, which
 /// resolves to `false` for everybody at every op level - and the command would
 /// report "Unknown command" to everyone. So every command is registered with a node
 /// that exists, and the real gate is checked inside the handler against the Paper
@@ -103,15 +83,9 @@ const ADMIN: [&str; 1] = ["ahome"];
 /// message is what Paper's handler sent, and an op-only default would replace it
 /// with the host's "Unknown command".
 ///
-/// Lowercase on purpose. `register_permission` enforces `node.starts_with("{name}:")`
-/// exactly (`plugin/api/context.rs:281-289`), so the namespace cannot be spelled
-/// differently from [`PLUGIN`] - and permission nodes are matched by exact string,
-/// case included (`pumpkin-util/src/permission.rs:339`). An uppercase `PumpkinHome:`
-/// worked only for whoever typed it back identically, and this plugin's other nodes
-/// (`home.admin`, `advancedhomes.limit.N`) are lowercase, so one `pumpkinhome:` prefix
-/// is now the only spelling in play.
-const USE_HOME: &str = "pumpkinhome:home";
-const USE_ADMIN: &str = "pumpkinhome:ahome";
+/// The namespace must match [`PLUGIN`] exactly, including case.
+const USE_HOME: &str = "ModernHome:home";
+const USE_ADMIN: &str = "ModernHome:ahome";
 
 /// Every node this plugin registers.
 ///
@@ -202,13 +176,25 @@ impl Plugin for PumpkinHome {
         // Chat is blocking, because a pending rename has to be able to swallow the
         // message; a non-blocking handler's return value is discarded by the host,
         // so `cancelled` would never be read back.
-        context.register_event_handler::<PlayerChatEvent, _>(OnChat, EventPriority::Normal, true)?;
+        context.register_event_handler::<PlayerChatEvent, _>(
+            OnChat,
+            EventPriority::Normal,
+            true,
+        )?;
         // Clicks are blocking for the same reason: the whole point is cancelling.
-        context.register_event_handler::<InventoryClickEvent, _>(OnClick, EventPriority::Normal, true)?;
+        context.register_event_handler::<InventoryClickEvent, _>(
+            OnClick,
+            EventPriority::Normal,
+            true,
+        )?;
         // Close is observational - `InventoryCloseEventData` has no `cancelled`
         // field - but it still has to run, so it is registered blocking only so it
         // is ordered after the click handler rather than before it.
-        context.register_event_handler::<InventoryCloseEvent, _>(OnClose, EventPriority::Low, true)?;
+        context.register_event_handler::<InventoryCloseEvent, _>(
+            OnClose,
+            EventPriority::Low,
+            true,
+        )?;
         // Damage only records a timestamp, so there is nothing to give back.
         context.register_event_handler::<EntityDamageByEntityEvent, _>(
             OnDamage,
@@ -216,8 +202,16 @@ impl Plugin for PumpkinHome {
             false,
         )?;
         // Join and leave are bookkeeping.
-        context.register_event_handler::<PlayerJoinEvent, _>(OnJoin, EventPriority::Normal, false)?;
-        context.register_event_handler::<PlayerLeaveEvent, _>(OnLeave, EventPriority::Low, false)?;
+        context.register_event_handler::<PlayerJoinEvent, _>(
+            OnJoin,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<PlayerLeaveEvent, _>(
+            OnLeave,
+            EventPriority::Low,
+            false,
+        )?;
 
         let homes = state::player_count();
         let layout = config::Config::defaults().homes_layout().slots_per_page();
@@ -249,7 +243,7 @@ fn register_nodes(context: &Context) -> usize {
         if register(
             context,
             node,
-            "A PumpkinHome command.",
+            "A ModernHome command.",
             PermissionDefault::Allow,
         ) {
             registered += 1;
@@ -262,12 +256,7 @@ fn register_nodes(context: &Context) -> usize {
 ///
 /// A namespace mistake lands here, and every command behind the node becomes
 /// invisible to everybody, operators included - so it is logged loudly.
-fn register(
-    context: &Context,
-    node: &str,
-    description: &str,
-    default: PermissionDefault,
-) -> bool {
+fn register(context: &Context, node: &str, description: &str, default: PermissionDefault) -> bool {
     match context.register_permission(&Permission {
         node: node.to_string(),
         description: description.to_string(),
@@ -334,6 +323,10 @@ impl EventHandler<PlayerChatEvent> for OnChat {
         event.cancelled = true;
 
         let config = screens::config();
+        if !permissions::can_manage(&server, &event.player, &pending.target) {
+            screens::say(&config, &event.player, "no-permission", &[]);
+            return event;
+        }
         let mut name = text::strip_legacy_codes(&event.message).trim().to_string();
 
         if name.is_empty() {
@@ -355,11 +348,21 @@ impl EventHandler<PlayerChatEvent> for OnChat {
         let target = (pending.target, pending.target_name);
 
         let old_name = state::with_store(|store| {
-            store.homes(&target.0).and_then(|homes| homes.find(number).and_then(|h| h.name.clone()))
+            store
+                .homes(&target.0)
+                .and_then(|homes| homes.find(number).and_then(|h| h.name.clone()))
         });
 
-        let written = state::with_store(|store| store.rename_home(&target.0, number, &name));
-        state::with_store(store::Store::save);
+        let written = match state::with_store(|store| {
+            store.update(|store| store.rename_home(&target.0, number, &name))
+        }) {
+            Ok(written) => written,
+            Err(error) => {
+                tracing::error!("Could not rename home: {error}");
+                screens::say(&config, &event.player, "home-rename-fail", &[]);
+                return event;
+            }
+        };
 
         if written {
             screens::say(
@@ -405,16 +408,20 @@ impl EventHandler<InventoryClickEvent> for OnClick {
         server: Server,
         mut event: EventData<InventoryClickEvent>,
     ) -> EventData<InventoryClickEvent> {
-        // Unconditionally, first, exactly as `GUIManager.onInventoryClick` and
-        // then every handler did: two `setCancelled(true)` calls in a row. Nothing
-        // can be taken out of either screen, ever, including from the player's own
-        // inventory area below it.
-        event.cancelled = true;
-
         let viewer = state::uuid_of(&event.player);
-        let Some(session) = state::session(&viewer) else {
+        let Some(mut session) = state::session(&viewer) else {
             return event;
         };
+        // Only our menus own these clicks. Leave every other inventory untouched.
+        event.cancelled = true;
+        let config = screens::config();
+        if !permissions::can_manage(&server, &event.player, &session.target) {
+            state::discard_rename(&viewer);
+            screens::say(&config, &event.player, "no-permission", &[]);
+            return event;
+        }
+        session.max_homes = permissions::max_homes(&server, &event.player, config.limit_scan_max());
+        state::set_session(session.clone());
 
         // `raw_slot` is the top inventory's own numbering, which is what the Java
         // handler compared against `inventory.getSize()`. A negative slot is the
@@ -483,13 +490,16 @@ fn run(
             // close handler would otherwise see nothing pending and treat this as the
             // player walking away.
             screens::close_screen(player);
-            screens::say(config, player, "home-rename-prompt", &[]);
-            screens::show(config, player, "home-rename-prompt-actionbar", &[]);
+            screens::rename_prompt(config, player);
         }
         homes_gui::Action::Set { number } => set_home(server, config, session, player, number),
         homes_gui::Action::Delete { home } => screens::show_confirm(player, session, &home),
         homes_gui::Action::PreviousPage | homes_gui::Action::NextPage => {
-            let delta = if matches!(action, homes_gui::Action::PreviousPage) { -1 } else { 1 };
+            let delta = if matches!(action, homes_gui::Action::PreviousPage) {
+                -1
+            } else {
+                1
+            };
             let next = screens::turned(session, delta);
             screens::render_homes(config, player, &next);
         }
@@ -514,8 +524,25 @@ fn run_confirm(
             let Some(home) = session.pending_delete.clone() else {
                 return;
             };
-            let deleted = state::with_store(|store| store.delete_home(&session.target, home.home_number));
-            state::with_store(store::Store::save);
+            let deleted = match state::with_store(|store| {
+                store.update(|store| store.delete_home(&session.target, home.home_number))
+            }) {
+                Ok(deleted) => deleted,
+                Err(error) => {
+                    tracing::error!("Could not delete home: {error}");
+                    screens::say(config, player, "home-delete-fail", &[]);
+                    return;
+                }
+            };
+            if !deleted {
+                screens::say(
+                    config,
+                    player,
+                    "home-not-exist",
+                    &[("%index%", home.home_number.to_string())],
+                );
+                return;
+            }
 
             // The message is `home-deleted-admin` in both directions: Paper's
             // confirmation screen sent the admin wording even when the viewer was
@@ -526,9 +553,8 @@ fn run_confirm(
                 "home-deleted-admin",
                 &[("%target%", session.target_name.clone())],
             );
-            let _ = deleted;
             // A delete always returned to page one, because a new handler was built.
-            let next = screens::turned(session, 1 - session.page as i64);
+            let next = screens::first_page(session);
             screens::render_homes(config, player, &next);
         }
     }
@@ -547,8 +573,18 @@ fn set_home(
 ) {
     let world = player.get_world();
     let world_name = world.get_name();
+    let dimension = world.get_dimension();
     if config.is_blacklisted(&world_name) {
         screens::say(config, player, "home-blacklisted-world", &[]);
+        sounds::play(config, player, "error");
+        return;
+    }
+
+    // OnClick refreshed this limit before planning the action.
+    let max = session.max_homes;
+    let count = state::with_store(|store| store.home_numbers(&session.target).len());
+    if number < 1 || number > max || count >= max.max(0) as usize {
+        screens::say(config, player, "home-limit-reached", &[]);
         sounds::play(config, player, "error");
         return;
     }
@@ -557,19 +593,23 @@ fn set_home(
     let home = homes::Home::new(
         number,
         Some(world_name),
-        position.0,
-        position.1,
-        position.2,
-        player.get_yaw(),
-        player.get_pitch(),
+        position,
+        (player.get_yaw(), player.get_pitch()),
         None,
         // Every home records this server, which is what `HomeManager.setHome` did
         // through the `server_id` column.
         Some(config.server_id()),
-    );
+    )
+    .in_dimension(dimension);
 
-    state::with_store(|store| store.set_home(&session.target, home));
-    state::with_store(store::Store::save);
+    if let Err(error) =
+        state::with_store(|store| store.update(|store| store.set_home(&session.target, home)))
+    {
+        tracing::error!("Could not save home: {error}");
+        screens::say(config, player, "home-set-fail", &[]);
+        sounds::play(config, player, "error");
+        return;
+    }
     screens::render_homes(config, player, session);
     let _ = server;
 }
@@ -591,14 +631,22 @@ fn teleport_to(
         screens::say(config, player, "teleport-cross-server-unavailable", &[]);
         return;
     }
-    let Some(world_name) = home.world.clone() else {
+    if home.world.is_none() {
+        screens::say(config, player, "teleport-world-not-loaded", &[]);
+        return;
+    }
+    let mut worlds = server
+        .get_all_worlds()
+        .into_iter()
+        .filter(|world| home.matches_world(&world.get_name(), &world.get_dimension()));
+    let Some(world) = worlds.next() else {
         screens::say(config, player, "teleport-world-not-loaded", &[]);
         return;
     };
-    let Some(world) = server.get_world_by_name(&world_name) else {
-        screens::say(config, player, "teleport-world-not-loaded", &[]);
+    if worlds.next().is_some() {
+        screens::say(config, player, "teleport-world-ambiguous", &[]);
         return;
-    };
+    }
 
     // `start` owns the destination: the `World` is consumed by the teleport, so
     // there is no second copy to hand over separately.
@@ -687,7 +735,11 @@ fn player_by_entity_id(server: &Server, id: i32) -> Option<Player> {
 struct OnJoin;
 
 impl EventHandler<PlayerJoinEvent> for OnJoin {
-    fn handle(&self, _server: Server, event: EventData<PlayerJoinEvent>) -> EventData<PlayerJoinEvent> {
+    fn handle(
+        &self,
+        _server: Server,
+        event: EventData<PlayerJoinEvent>,
+    ) -> EventData<PlayerJoinEvent> {
         // Paper's `onPlayerJoin` fed the cross-server teleporter, which has no
         // counterpart here.
         teleport::cancel(&state::uuid_of(&event.player));
@@ -710,6 +762,7 @@ impl EventHandler<PlayerLeaveEvent> for OnLeave {
         // task is cancelled outright here instead, which is the same outcome
         // reached a tick earlier.
         state::forget_damage(&viewer);
+        teleport::cancel(&viewer);
         state::discard_rename(&viewer);
         state::clear_session(&viewer);
         event
@@ -788,7 +841,7 @@ pub fn del_home_command() -> Command {
 /// Every subcommand is reachable, and the bare form is the help text, which is what
 /// Paper's `args.length == 0 -> sendHelp` did.
 pub fn admin_command() -> Command {
-    Command::new(&names(&ADMIN), "Admin commands for PumpkinHome")
+    Command::new(&names(&ADMIN), "Admin commands for ModernHome")
         .execute(commands::AdminHelp)
         .then(CommandNode::literal("reload").execute(commands::Reload))
         .then(CommandNode::literal("help").execute(commands::Help))
@@ -821,17 +874,26 @@ pub fn done() -> Result<i32, CommandError> {
 
 /// Sends a message and yields a failure count.
 pub fn soft_error(sender: &CommandSender, message: impl Into<String>) -> Result<i32, CommandError> {
-    sender.send_error(pumpkin_plugin_api::text::TextComponent::text(&message.into()));
+    sender.send_error(pumpkin_plugin_api::text::TextComponent::text(
+        &message.into(),
+    ));
     Ok(1)
 }
 
 /// Sends the plugin's own message to a command sender.
-pub fn reply(sender: &CommandSender, config: &crate::config::Config, key: &str, placeholders: &[(&'static str, String)]) {
+pub fn reply(
+    sender: &CommandSender,
+    config: &crate::config::Config,
+    key: &str,
+    placeholders: &[(&'static str, String)],
+) {
     let rendered = messages::render(config, key, placeholders);
-    sender.send_message(pumpkin_plugin_api::text::TextComponent::from_legacy_string_with_code(
-        &rendered,
-        text::CODE,
-    ));
+    sender.send_message(
+        pumpkin_plugin_api::text::TextComponent::from_legacy_string_with_code(
+            &rendered,
+            text::CODE,
+        ),
+    );
 }
 
 /// The `init-plugin` export a component needs, and nothing on a host build wants.
@@ -865,6 +927,7 @@ mod tests {
     fn the_metadata_name_is_the_namespace() {
         // The host matches against `metadata.name`, not against a constant.
         assert_eq!(PumpkinHome::new().metadata().name, PLUGIN);
+        assert_eq!(PLUGIN, "ModernHome");
     }
 
     #[test]

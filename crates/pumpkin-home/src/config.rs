@@ -236,8 +236,15 @@ impl Config {
             .messages
             .get(key)
             .and_then(Value::as_str)
-            .unwrap_or(key)
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| {
+                // Newly added messages work with existing configuration files.
+                parse_or_empty(defaults::MESSAGES)?
+                    .get(key)?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| key.to_string());
         let prefix = self
             .messages
             .get("prefix")
@@ -391,17 +398,10 @@ pub fn load(folder: &str) -> Loaded {
     let mut problems = Vec::new();
     let mut read = |name: &str, default: &'static str| -> Value {
         let path = std::path::Path::new(folder).join(name);
-        let text = match std::fs::read_to_string(&path) {
+        let text = match read_config(&path, default) {
             Ok(text) => text,
-            Err(_) => {
-                // Missing, or unreadable. Write the shipped default once, and
-                // remember that it was written so the log can say so.
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Err(error) = std::fs::write(&path, default) {
-                    problems.push(format!("{name}: could not be written ({error})"));
-                }
+            Err(error) => {
+                problems.push(format!("{name}: could not be read or created ({error})"));
                 default.to_string()
             }
         };
@@ -438,6 +438,33 @@ pub fn load(folder: &str) -> Loaded {
             database,
         },
         problems,
+    }
+}
+
+fn read_config(path: &std::path::Path, default: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut file) => {
+                    file.write_all(default.as_bytes())?;
+                    Ok(default.to_string())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::fs::read_to_string(path)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -480,6 +507,50 @@ fn number_at(root: &Value, key: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_configuration_is_preserved_and_reported() {
+        let folder = std::env::temp_dir().join(format!(
+            "modernhome-config-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("config.yml");
+        let invalid = [0xff, 0xfe, 0x41];
+        std::fs::write(&path, invalid).unwrap();
+        let loaded = load(folder.to_str().unwrap());
+        assert!(!loaded.clean());
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|problem| problem.starts_with("config.yml:"))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), invalid);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn new_failure_messages_work_with_older_configuration() {
+        let mut config = Config::defaults();
+        config.replace(
+            Section::Messages,
+            parse_or_empty("prefix: ''\nhome-set: 'Custom text'\n").unwrap(),
+        );
+        assert_eq!(config.message("home-set"), "Custom text");
+        assert!(
+            config
+                .message("home-rename-fail")
+                .contains("Failed to save")
+        );
+        assert!(
+            config
+                .message("teleport-world-ambiguous")
+                .contains("dimension")
+        );
+        assert_eq!(config.message("unknown-key"), "unknown-key");
+    }
 
     #[test]
     fn the_shipped_files_are_valid_yaml() {
@@ -559,7 +630,10 @@ mod tests {
         // key is visible in game as the key's own name.
         let config = Config::defaults();
         assert_eq!(config.message("home-set"), prefix() + "&aHome saved.");
-        assert_eq!(config.message("no-such-key"), format!("{}no-such-key", prefix()));
+        assert_eq!(
+            config.message("no-such-key"),
+            format!("{}no-such-key", prefix())
+        );
     }
 
     #[test]

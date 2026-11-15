@@ -3,7 +3,7 @@
 //! ## Where the permission checks live
 //!
 //! `context.register_command` attaches one node to the whole tree, so the coarse
-//! check is the `pumpkinhome:*` node on the root - which is `Allow`, deliberately,
+//! check is a `ModernHome:` node on the root - which is `Allow`, deliberately,
 //! because an unregistered node resolves to `false` for everyone at every op level
 //! and the command would report "Unknown command" to everybody.
 //!
@@ -49,12 +49,8 @@ use pumpkin_plugin_api::{
 };
 
 use crate::{
-    config::Config,
-    homes::Home,
-    permissions, screens, sounds,
-    state,
+    config::Config, done, homes::Home, permissions, reply, screens, soft_error, sounds, state,
     store::Store,
-    done, reply, soft_error,
 };
 
 fn not_a_player(sender: &CommandSender) -> Result<i32, CommandError> {
@@ -127,7 +123,9 @@ impl CommandHandler for SetHome {
         };
         let config = screens::config();
         let viewer = state::uuid_of(&player);
-        let world_name = player.get_world().get_name();
+        let world = player.get_world();
+        let world_name = world.get_name();
+        let dimension = world.get_dimension();
 
         if config.is_blacklisted(&world_name) {
             say(&sender, &config, "home-blacklisted-world", &[]);
@@ -154,25 +152,31 @@ impl CommandHandler for SetHome {
         };
 
         let position = player.get_position();
-        state::with_store(|store| {
-            store.set_home(
-                &viewer,
-                Home::new(
-                    number,
-                    Some(world_name),
-                    position.0,
-                    position.1,
-                    position.2,
-                    player.get_yaw(),
-                    player.get_pitch(),
-                    None,
-                    // Every home records this server, which is what the `server_id`
-                    // column did.
-                    Some(config.server_id()),
-                ),
-            )
+        let rotation = (player.get_yaw(), player.get_pitch());
+        let saved = state::with_store(|store| {
+            store.update(|store| {
+                store.set_home(
+                    &viewer,
+                    Home::new(
+                        number,
+                        Some(world_name),
+                        position,
+                        rotation,
+                        None,
+                        // Every home records this server, which is what the `server_id`
+                        // column did.
+                        Some(config.server_id()),
+                    )
+                    .in_dimension(dimension),
+                )
+            })
         });
-        state::with_store(Store::save);
+        if let Err(error) = saved {
+            tracing::error!("Could not save home: {error}");
+            say(&sender, &config, "home-set-fail", &[]);
+            sounds::play(&config, &player, "error");
+            return done();
+        }
 
         say(&sender, &config, "home-set", &[]);
         done()
@@ -240,8 +244,17 @@ impl CommandHandler for Delete {
             return done();
         }
 
-        let deleted = state::with_store(|store| store.delete_home(&viewer, number));
-        state::with_store(Store::save);
+        let deleted = match state::with_store(|store| {
+            store.update(|store| store.delete_home(&viewer, number))
+        }) {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                tracing::error!("Could not delete home: {error}");
+                say(&sender, &config, "home-delete-fail", &[]);
+                sounds::play(&config, &player, "error");
+                return done();
+            }
+        };
 
         say(&sender, &config, "home-deleted", &[]);
         if !deleted {

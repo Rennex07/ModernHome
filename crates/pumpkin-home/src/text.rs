@@ -53,10 +53,7 @@ pub fn apply(input: &str, placeholders: &[(&str, String)]) -> String {
         // them, while the token the scan found is the bare name between two `%`.
         // Stripping the delimiters off the key is cheaper than rebuilding them
         // around the token once per candidate.
-        match placeholders
-            .iter()
-            .find(|(name, _)| bare(name) == token)
-        {
+        match placeholders.iter().find(|(name, _)| bare(name) == token) {
             Some((_, value)) => {
                 out.push_str(value);
                 rest = &after[close + 1..];
@@ -115,8 +112,9 @@ pub fn legacy_hex(input: &str) -> String {
         } else if bytes[i] == b'#' {
             i
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            let ch = input[i..].chars().next().expect("character at boundary");
+            out.push(ch);
+            i += ch.len_utf8();
             continue;
         };
 
@@ -127,7 +125,7 @@ pub fn legacy_hex(input: &str) -> String {
             continue;
         };
 
-        out.push_str(&CODE.to_string());
+        out.push(CODE);
         out.push('x');
         for nibble in nibbles {
             out.push(CODE);
@@ -181,8 +179,8 @@ const COLOURS: [(&str, char); 16] = [
     ("dark_red", '4'),
     ("dark_purple", '5'),
     ("gold", '6'),
-    ("gray", '8'),
-    ("dark_gray", '7'),
+    ("gray", '7'),
+    ("dark_gray", '8'),
     ("blue", '9'),
     ("green", 'a'),
     ("aqua", 'b'),
@@ -239,6 +237,10 @@ pub fn minimessage(input: &str) -> String {
             b'\\' if bytes.get(i + 1) == Some(&b'<') => {
                 out.push('<');
                 i += 2;
+            }
+            b'\\' => {
+                out.push('\\');
+                i += 1;
             }
             b'<' => {
                 let Some((tag, closing, next)) = read_tag(bytes, i) else {
@@ -310,7 +312,10 @@ fn apply_tag(tag: &str, closing: bool, stack: &mut Vec<Frame>, style: &mut Style
     } else if let Some((_, code)) = COLOURS.iter().find(|(name, _)| *name == tag) {
         next.hex = None;
         next.colour = Some(*code);
-    } else if let Some(hex) = tag.strip_prefix('#').and_then(|h| ascii_hex_at(h.as_bytes(), 0, 6)) {
+    } else if let Some(hex) = tag
+        .strip_prefix('#')
+        .and_then(|h| ascii_hex_at(h.as_bytes(), 0, 6))
+    {
         let mut bytes = [0u8; 6];
         for (slot, nibble) in bytes.iter_mut().zip(hex) {
             *slot = nibble as u8;
@@ -380,8 +385,7 @@ pub fn decorate(input: &str) -> String {
 /// `a`-`f`, `k`-`o` (the range, not three letters) and `r`. `x` is included because
 /// [`legacy_hex`] emits `&x` followed by six `&`-prefixed nibbles.
 const fn is_code_char(c: u8) -> bool {
-    c.is_ascii_digit()
-        || matches!(c, b'a'..=b'f' | b'k'..=b'o' | b'r' | b'x')
+    c.is_ascii_digit() || matches!(c, b'a'..=b'f' | b'k'..=b'o' | b'r' | b'x')
 }
 
 /// Splits a rendered string into `(is_code, text)` runs.
@@ -412,8 +416,8 @@ pub fn segments(input: &str) -> Vec<(bool, String)> {
     let mut i = 0;
 
     while i < bytes.len() {
-        let is_bare_ampersand = bytes[i] == b'&'
-            && !bytes.get(i + 1).is_some_and(|&c| is_code_char(c));
+        let is_bare_ampersand =
+            bytes[i] == b'&' && !bytes.get(i + 1).is_some_and(|&c| is_code_char(c));
 
         if is_bare_ampersand {
             if !coded.is_empty() {
@@ -507,17 +511,31 @@ fn is_stripped_code(code: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn named_gray_colors_match_legacy_codes() {
+        assert_eq!(super::minimessage("<gray>text</gray>"), "&r&7text&r");
+        assert_eq!(
+            super::minimessage("<dark_gray>text</dark_gray>"),
+            "&r&8text&r"
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn decoration_preserves_unicode_and_literal_backslashes() {
+        assert_eq!(decorate("Café • 家"), "Café • 家");
+        assert_eq!(decorate(r"C:\homes\base"), r"C:\homes\base");
+        assert_eq!(decorate(r"\<red>literal"), "<red>literal");
+        assert_eq!(decorate("Café #37A2FFhome"), "Café &x&3&7&a&2&f&fhome");
+    }
 
     /// The two placeholders most tests need.
     ///
     /// A function rather than a `const`, because a `String` is not const-built and
     /// the list is small enough that making one per call is free.
     fn placeholders() -> [(&'static str, String); 2] {
-        [
-            ("%index%", "3".to_string()),
-            ("%home%", "base".to_string()),
-        ]
+        [("%index%", "3".to_string()), ("%home%", "base".to_string())]
     }
 
     #[test]
@@ -535,15 +553,15 @@ mod tests {
             ("%home%", "%index%".to_string()),
             ("%index%", "3".to_string()),
         ];
-        assert_eq!(apply("&9Home %index% %home%", &placeholders), "&9Home 3 %index%");
+        assert_eq!(
+            apply("&9Home %index% %home%", &placeholders),
+            "&9Home 3 %index%"
+        );
     }
 
     #[test]
     fn an_unknown_key_is_left_exactly_as_written() {
-        assert_eq!(
-            apply("%foo% and %bar%", &placeholders()),
-            "%foo% and %bar%"
-        );
+        assert_eq!(apply("%foo% and %bar%", &placeholders()), "%foo% and %bar%");
     }
 
     #[test]
@@ -638,7 +656,10 @@ mod tests {
         // whole style is re-emitted after the reset rather than just stopping.
         // `c` comes back red: the close re-states the style underneath, which is the whole
         // reason a close emits a reset plus the restored style rather than nothing.
-        assert_eq!(minimessage("<red>a<green>b</green>c</red>"), "&r&ca&r&ab&r&cc&r");
+        assert_eq!(
+            minimessage("<red>a<green>b</green>c</red>"),
+            "&r&ca&r&ab&r&cc&r"
+        );
         // Decorations nest inside colours and come back off. Each tag emits a reset plus
         // the *whole* current style rather than only what changed, so the colour is
         // stated twice here - redundant on the wire, identical on screen, and much
@@ -665,7 +686,10 @@ mod tests {
         // Unsupported syntax stays as written. Rendering it as a colour would be a
         // silent lie about what the plugin supports.
         assert_eq!(minimessage("<hover>x</hover>"), "<hover>x</hover>");
-        assert_eq!(minimessage("<gradient:#a>#b</gradient>"), "<gradient:#a>#b</gradient>");
+        assert_eq!(
+            minimessage("<gradient:#a>#b</gradient>"),
+            "<gradient:#a>#b</gradient>"
+        );
         // An unmatched `<` is text.
         assert_eq!(minimessage("3 < 5"), "3 < 5");
         assert_eq!(minimessage("a < b > c"), "a < b > c");
@@ -692,7 +716,10 @@ mod tests {
         // The whole path, in the order Paper applied it: placeholders, then colour.
         let rendered = apply(
             "&9Home %index% %home%",
-            &[("%index%", "1".to_string()), ("%home%", "<red>Base</red>".to_string())],
+            &[
+                ("%index%", "1".to_string()),
+                ("%home%", "<red>Base</red>".to_string()),
+            ],
         );
         assert_eq!(rendered, "&9Home 1 <red>Base</red>");
         assert_eq!(decorate(&rendered), "&9Home 1 &r&cBase&r");
@@ -703,9 +730,19 @@ mod tests {
         // The host's parser takes the character after every `&` as the code and then
         // throws it away if it is not one (`legacy.rs:58` and `:131`), so these have
         // to be split off before it sees them.
-        assert_eq!(segments("Fish & Chips"), vec![(true, "Fish ".to_string()), (false, "&".to_string()), (true, " Chips".to_string())]);
+        assert_eq!(
+            segments("Fish & Chips"),
+            vec![
+                (true, "Fish ".to_string()),
+                (false, "&".to_string()),
+                (true, " Chips".to_string())
+            ]
+        );
         // `H` is not a colour, which is the case from the bug report.
-        assert_eq!(segments("&HI"), vec![(false, "&".to_string()), (true, "HI".to_string())]);
+        assert_eq!(
+            segments("&HI"),
+            vec![(false, "&".to_string()), (true, "HI".to_string())]
+        );
         assert!(segments("").is_empty());
     }
 
@@ -722,10 +759,7 @@ mod tests {
         );
         // Every run a pure-code template produces stays a single run, which is what
         // keeps the ordinary path on the host's parser in one call.
-        assert_eq!(
-            segments("&9Home 1"),
-            vec![(true, "&9Home 1".to_string())]
-        );
+        assert_eq!(segments("&9Home 1"), vec![(true, "&9Home 1".to_string())]);
         assert!(segments("&9Home 1").iter().all(|(is_code, _)| *is_code));
         // A code in the middle still stays with what precedes and follows it.
         assert_eq!(
@@ -767,9 +801,7 @@ mod tests {
             );
         }
         for code in 'a'..='z' {
-            let expected = if code.is_ascii_digit()
-                || matches!(code, 'a'..='f' | 'k'..='r')
-            {
+            let expected = if code.is_ascii_digit() || matches!(code, 'a'..='f' | 'k'..='r') {
                 "ab".to_string()
             } else {
                 format!("a\u{00a7}{code}b")

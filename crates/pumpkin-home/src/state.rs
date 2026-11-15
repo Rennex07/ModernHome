@@ -136,7 +136,7 @@ pub struct Session {
     pub self_view: bool,
     /// The current page, one-based. Never clamped: see [`Session::page`]'s note.
     pub page: usize,
-    /// The viewer's home limit, resolved once when the session opened.
+    /// The viewer's home limit, refreshed before each menu action.
     pub max_homes: i32,
     /// Which screen is open.
     pub open: Open,
@@ -147,11 +147,9 @@ pub struct Session {
 impl Session {
     /// Builds a session for a homes screen at page one.
     ///
-    /// `max_homes` is resolved once, here, rather than per `decorate()`. The Java
-    /// version resolved it on every decorate and every `getTotalPages()` call,
-    /// which a port cannot do as cheaply - the limit is the highest
-    /// `advancedhomes.limit.N` the player holds, and Pumpkin's permission API
-    /// only answers one node at a time.
+    /// The initial limit is supplied by the caller and refreshed before handling
+    /// clicks. Rendering uses that snapshot rather than probing every permission
+    /// again for each item.
     #[must_use]
     pub fn homes(
         viewer: String,
@@ -248,7 +246,7 @@ pub fn open_store(path: std::path::PathBuf) {
 /// store lock is held for its duration.
 pub fn with_store<R>(body: impl FnOnce(&mut Store) -> R) -> R {
     let slot = STORE.get_or_init(|| Mutex::new(Store::at("homes.json")));
-    body(&mut *recover(slot.lock()))
+    body(&mut recover(slot.lock()))
 }
 
 /// How many players have homes, for the startup line.
@@ -398,7 +396,9 @@ pub fn forget_damage(viewer: &str) {
 /// Called from `on_unload`. The store is written rather than dropped, because a
 /// clean unload is the last chance a plugin gets to put its homes on disk.
 pub fn clear_all() {
-    with_store(Store::save);
+    if let Err(error) = with_store(Store::save) {
+        tracing::error!("Could not save homes during unload: {error}");
+    }
     recover(SESSIONS.lock()).clear();
     recover(PENDING_RENAMES.lock()).clear();
     recover(LAST_DAMAGE.lock()).clear();
@@ -443,7 +443,14 @@ mod tests {
     #[test]
     fn the_confirmation_session_keeps_the_viewer_and_takes_the_home() {
         let homes = session("uuid-a", "uuid-b");
-        let home = Home::new(3, Some("world".into()), 0.0, 0.0, 0.0, 0.0, 0.0, None, None);
+        let home = Home::new(
+            3,
+            Some("world".into()),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0),
+            None,
+            None,
+        );
         let confirm = Session::confirm(&homes, home.clone());
 
         assert_eq!(confirm.open, Open::Confirm);
@@ -522,16 +529,17 @@ mod tests {
             Home::new(
                 2,
                 Some("world".to_string()),
-                1.0,
-                64.0,
-                1.0,
-                0.0,
-                0.0,
+                (1.0, 64.0, 1.0),
+                (0.0, 0.0),
                 None,
                 None,
             ),
         );
-        assert_eq!(confirm.open, Open::Confirm, "the confirmation is what is drawn");
+        assert_eq!(
+            confirm.open,
+            Open::Confirm,
+            "the confirmation is what is drawn"
+        );
 
         let back = confirm.as_homes();
         assert_eq!(
@@ -539,7 +547,10 @@ mod tests {
             Open::Homes,
             "clicks route by `open`, so this is what makes the screen answer"
         );
-        assert_eq!(back.pending_delete, None, "and nothing is left armed to delete");
+        assert_eq!(
+            back.pending_delete, None,
+            "and nothing is left armed to delete"
+        );
         // The page survives: only `render_homes` callers that deliberately turned a
         // page change it, and a cancel is not a page change.
         assert_eq!(back.page, homes.page);
@@ -594,9 +605,15 @@ mod tests {
         // shared process.
         const KEY: &str = "test-reopen-key";
 
-        assert!(!is_reopening(KEY), "nothing is being replaced to begin with");
+        assert!(
+            !is_reopening(KEY),
+            "nothing is being replaced to begin with"
+        );
         begin_reopen(KEY);
-        assert!(is_reopening(KEY), "a close during the reopen is not a departure");
+        assert!(
+            is_reopening(KEY),
+            "a close during the reopen is not a departure"
+        );
         // Marking twice is harmless: the screens nest when a delete confirmation
         // hands back to the homes screen.
         begin_reopen(KEY);

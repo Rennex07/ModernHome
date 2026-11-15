@@ -138,9 +138,14 @@ pub fn plan(config: &serde_norway::Value, layout: &crate::layout::ConfirmLayout)
     // Step one: every configured item, in file order. An item is placed in *every*
     // slot its symbol occupies, and the later of two items on the same symbol
     // wins, which is what placing them in order produced in Java too.
-    if let Some(items) = config.get("items").and_then(serde_norway::Value::as_mapping) {
+    if let Some(items) = config
+        .get("items")
+        .and_then(serde_norway::Value::as_mapping)
+    {
         for (key, item) in items {
-            let Some(item) = item.as_mapping() else { continue };
+            let Some(item) = item.as_mapping() else {
+                continue;
+            };
             let symbol = item
                 .get("symbol")
                 .and_then(serde_norway::Value::as_str)
@@ -207,10 +212,7 @@ pub fn summary_name(home: &Home) -> String {
 #[must_use]
 pub fn summary_lore(home: &Home) -> [String; 2] {
     [
-        format!(
-            "&7World: &f{}",
-            home.world.as_deref().unwrap_or("unknown")
-        ),
+        format!("&7World: &f{}", home.world.as_deref().unwrap_or("unknown")),
         format!("&7Coords: &f{}", home.coordinates()),
     ]
 }
@@ -236,11 +238,8 @@ mod tests {
         Home::new(
             number,
             Some("world".into()),
-            12.0,
-            70.0,
-            -13.0,
-            0.0,
-            0.0,
+            (12.0, 70.0, -13.0),
+            (0.0, 0.0),
             name.map(str::to_string),
             None,
         )
@@ -263,7 +262,7 @@ mod tests {
     #[test]
     fn the_summary_is_in_every_slot_its_symbol_occupies() {
         // Row 1 of the shipped disposition is `--d-h-a--`, so its `h` is column 4,
-// which is slot 13. An admin adding a second `h` to that row gets a second paper.
+        // which is slot 13. An admin adding a second `h` to that row gets a second paper.
         let screen = plan(config().confirm_gui(), &layout());
         let display: Vec<u32> = screen
             .cells
@@ -302,10 +301,9 @@ mod tests {
 
         assert_eq!(screen.button_at(11), None, "the behaviour is gone");
         assert!(
-            screen
-                .cells
-                .iter()
-                .any(|cell| cell.slot == 11 && cell.item == Item::Configured("cancel-update".into())),
+            screen.cells.iter().any(
+                |cell| cell.slot == 11 && cell.item == Item::Configured("cancel-update".into())
+            ),
             "the item is still there"
         );
     }
@@ -425,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_home_with_no_world_says_unknown() {
-        let home = Home::new(1, None, 0.0, 0.0, 0.0, 0.0, 0.0, None, None);
+        let home = Home::new(1, None, (0.0, 0.0, 0.0), (0.0, 0.0), None, None);
         assert_eq!(summary_lore(&home)[0], "&7World: &funknown");
         assert_eq!(summary_lore(&home)[1], "&7Coords: &f0, 0, 0");
     }

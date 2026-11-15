@@ -25,11 +25,11 @@
 //! dropped when that screen closes. A viewer only ever has one open, so the
 //! question has one answer.
 
+use pumpkin_plugin_api::Screen;
 use pumpkin_plugin_api::common::ClickType;
 use pumpkin_plugin_api::gui::Gui;
 use pumpkin_plugin_api::java_packets::{CCloseContainer, ClientboundPacket};
 use pumpkin_plugin_api::player::Player;
-use pumpkin_plugin_api::Screen;
 use pumpkin_plugin_api::text::TextComponent;
 use pumpkin_plugin_api::{ItemStack, Server};
 
@@ -38,10 +38,7 @@ use crate::{
     confirm_gui,
     homes::{Home, PlayerHomes},
     homes_gui::{self, Action, Grid, Slot},
-    items,
-    messages,
-    permissions,
-    sounds,
+    items, messages, permissions, sounds,
     state::{self, Session},
     store::Store,
     text,
@@ -149,7 +146,7 @@ pub fn close_screen(viewer: &Player) {
     };
     for sync_id in 0..=100 {
         java.send_packet(&ClientboundPacket::CCloseContainer(CCloseContainer {
-            sync_id: i32::from(sync_id),
+            sync_id,
         }));
     }
 }
@@ -192,6 +189,12 @@ pub fn turned(session: &Session, delta: i64) -> Session {
     next
 }
 
+pub fn first_page(session: &Session) -> Session {
+    let mut next = session.as_homes();
+    next.page = 1;
+    next
+}
+
 /// Builds the homes screen's `Gui`.
 fn build_homes(config: &Config, session: &Session) -> Gui {
     let layout = config.homes_layout();
@@ -212,7 +215,10 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
     // pointer.
     let gui = Gui::new(
         layout.screen().unwrap_or(Screen::Generic9x6),
-        TextComponent::from_legacy_string_with_code(&homes_gui::title(config, session), text::CODE),
+        TextComponent::from_legacy_string_with_code(
+            &text::decorate(&homes_gui::title(config, session)),
+            text::CODE,
+        ),
     );
 
     for (index, cell) in grid.cells.iter().enumerate() {
@@ -221,9 +227,15 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
         };
 
         let placeholders = match cell {
-            Slot::Existing(home) => {
-                homes_gui::home(config, session, &homes, pages, home.home_number, home, &server_id)
-            }
+            Slot::Existing(home) => homes_gui::home(
+                config,
+                session,
+                &homes,
+                pages,
+                home.home_number,
+                home,
+                &server_id,
+            ),
             Slot::Empty(number) => homes_gui::empty(config, session, &homes, pages, *number),
             Slot::Locked => homes_gui::global(config, session, &homes, pages),
         };
@@ -260,7 +272,10 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
 
     let global = homes_gui::global(config, session, &homes, pages);
     if let Some(slot) = grid.previous {
-        gui.set_item(slot, item(config.homes_gui(), "previous-page", &global, true));
+        gui.set_item(
+            slot,
+            item(config.homes_gui(), "previous-page", &global, true),
+        );
     }
     if let Some(slot) = grid.next {
         gui.set_item(slot, item(config.homes_gui(), "next-page", &global, true));
@@ -294,11 +309,14 @@ fn build_confirm(config: &Config, session: &Session, home: &Home) -> Gui {
 
     let gui = Gui::new(
         layout.screen().unwrap_or(Screen::Generic9x3),
-        TextComponent::from_legacy_string_with_code(&config.confirm_title(), text::CODE),
+        TextComponent::from_legacy_string_with_code(
+            &text::decorate(&config.confirm_title()),
+            text::CODE,
+        ),
     );
     // Left at the default, for the reason given in `build_homes`.
-    gui.set_allow_grab_items(true);
-    gui.set_allow_put_items(true);
+    gui.set_allow_grab_items(false);
+    gui.set_allow_put_items(false);
 
     for cell in confirm_gui::plan(config.confirm_gui(), layout).cells {
         let stack = match &cell.item {
@@ -408,6 +426,24 @@ pub fn show(config: &Config, viewer: &Player, key: &str, placeholders: &[(&'stat
     }
 }
 
+/// Send the rename prompts configured for the homes screen.
+pub fn rename_prompt(config: &Config, viewer: &Player) {
+    if config.allow_chat() {
+        let text = text::decorate(&config.rename_prompt());
+        viewer.send_system_message(
+            TextComponent::from_legacy_string_with_code(&text, text::CODE),
+            false,
+        );
+    }
+    if config.allow_actionbar() {
+        let text = text::decorate(&config.rename_prompt_actionbar());
+        viewer.show_actionbar(TextComponent::from_legacy_string_with_code(
+            &text,
+            text::CODE,
+        ));
+    }
+}
+
 /// A message on both channels, which is what a cancelled countdown was.
 pub fn announce(config: &Config, viewer: &Player, key: &str) {
     messages::cancel(config, viewer, key, &[]);
@@ -416,6 +452,17 @@ pub fn announce(config: &Config, viewer: &Player, key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_returns_to_page_one_from_any_page() {
+        let mut before = session(4);
+        before.open = crate::state::Open::Confirm;
+        let after = first_page(&before);
+        assert_eq!(after.page, 1);
+        assert_eq!(after.open, crate::state::Open::Homes);
+        assert_eq!(after.target, before.target);
+        assert!(after.pending_delete.is_none());
+    }
 
     fn session(page: usize) -> Session {
         Session::homes(
@@ -451,7 +498,11 @@ mod tests {
         // limit under a viewer already on page nine.
         assert_eq!(turned(&session(1), 1).page, 2);
         assert_eq!(turned(&session(2), -1).page, 1);
-        assert_eq!(turned(&session(1), -1).page, 1, "page one cannot go below one");
+        assert_eq!(
+            turned(&session(1), -1).page,
+            1,
+            "page one cannot go below one"
+        );
         assert_eq!(turned(&session(1), 99).page, 2, "one click is one page");
         assert_eq!(turned(&session(1), -99).page, 1);
     }
@@ -471,6 +522,5 @@ mod tests {
         // The same pair Paper's `runAtEntityTimer(player, tick, 1L, 20L)` used.
         assert_eq!(COUNTDOWN_DELAY, 1);
         assert_eq!(COUNTDOWN_PERIOD, 20);
-        assert!(COUNTDOWN_DELAY > 0, "a zero delay arms a task that may never fire");
     }
 }

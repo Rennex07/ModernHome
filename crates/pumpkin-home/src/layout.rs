@@ -208,7 +208,11 @@ mod tests {
         // is the `row*9+col` / `(row+1)*9+col` rule, not a fixed row offset.
         let layout = Layout::parse(&["--h-h--".to_string()]);
         assert_eq!(layout.home_slots, vec![2, 4]);
-        assert_eq!(layout.dye_slots, Vec::<u32>::new(), "no row below, so no dyes");
+        assert_eq!(
+            layout.dye_slots,
+            Vec::<u32>::new(),
+            "no row below, so no dyes"
+        );
         assert_eq!(layout.dye_for(0), None);
     }
 
