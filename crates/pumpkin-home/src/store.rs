@@ -1,9 +1,18 @@
 //! The homes, on disk.
 //!
-//! The homes live in one JSON file, atomically replaced after every change.
-//! SQL storage is not implemented in this port.
-//! The shape is the row shape the `player_homes` table had, one key per player
-//! uuid, so a store written by this plugin is readable by eye.
+//! The homes live in memory and are written out by one of two backends:
+//!
+//! * `json` - one JSON file, atomically replaced after every change. This is
+//!   the default, and the shape is the row shape the `player_homes` table had,
+//!   one key per player uuid, so a store written by this plugin is readable by
+//!   eye.
+//! * `sqlite` - a SQLite database with one row per home, keyed by player uuid
+//!   and slot number. Only the players that changed are rewritten, in one
+//!   transaction, so a save never touches a row it did not mean to change.
+//!
+//! Which one is used is decided by `database.yml`. The JSON file and the SQLite
+//! database are two different files: switching between them does not move the
+//! homes, and the old file is left exactly as it was.
 //!
 //! ## There is no separate cache
 //!
@@ -21,7 +30,7 @@
 //! destroy the very data it failed to parse, which is the one loss an admin
 //! cannot undo.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{
@@ -33,6 +42,8 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::homes::{Home, PlayerHomes};
+#[cfg(feature = "sqlite")]
+use crate::sqlite::Sqlite;
 
 /// The file's whole content: one entry per player uuid.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -50,7 +61,32 @@ pub struct Store {
     dirty: bool,
     /// Whether the last [`Store::load`] failed, which blocks writes.
     problem: bool,
+    /// The players whose homes changed since the last [`Store::save`].
+    ///
+    /// The JSON backend rewrites the whole file, so it does not need this. The
+    /// SQLite backend does: it rewrites exactly these players, so a change to
+    /// one player's home does not touch another player's row.
+    touched: BTreeSet<String>,
+    /// The file the homes are read from and written to.
     path: PathBuf,
+    backend: Backend,
+}
+
+/// Where the homes are kept.
+#[derive(Debug, Default)]
+enum Backend {
+    /// One JSON file, replaced atomically.
+    #[default]
+    Json,
+    /// A SQLite database, one row per home.
+    #[cfg(feature = "sqlite")]
+    Sqlite(Sqlite),
+    /// The backend could not be opened, so nothing is read and nothing is
+    /// written.
+    Broken {
+        /// Why the backend is not usable.
+        reason: String,
+    },
 }
 
 impl Store {
@@ -61,48 +97,83 @@ impl Store {
             players: BTreeMap::new(),
             dirty: false,
             problem: false,
+            touched: BTreeSet::new(),
             path: path.into(),
+            backend: Backend::Json,
         }
     }
 
-    /// Reads the file, keeping the current state if it cannot be read.
+    /// Binds a store to a SQLite database without reading it.
+    ///
+    /// A database that cannot be opened leaves the store broken: the homes are
+    /// not read and nothing is written, rather than the plugin quietly falling
+    /// back to another file and splitting the homes across two of them.
+    #[must_use]
+    pub fn sqlite(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        #[cfg(feature = "sqlite")]
+        {
+            match Sqlite::open(&path) {
+                Ok(sqlite) => Self {
+                    players: BTreeMap::new(),
+                    dirty: false,
+                    problem: false,
+                    touched: BTreeSet::new(),
+                    path,
+                    backend: Backend::Sqlite(sqlite),
+                },
+                Err(error) => Self::broken(path, error.to_string()),
+            }
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            Self::broken(path, "this build has no SQLite support".to_string())
+        }
+    }
+
+    /// A store that reads nothing and writes nothing.
+    fn broken(path: PathBuf, reason: String) -> Self {
+        error!(
+            "the homes database {} is not usable: {reason}; the homes are not read and nothing is written",
+            path.display()
+        );
+        Self {
+            players: BTreeMap::new(),
+            dirty: false,
+            problem: true,
+            touched: BTreeSet::new(),
+            path,
+            backend: Backend::Broken { reason },
+        }
+    }
+
+    /// Reads the homes, keeping the current state if they cannot be read.
     ///
     /// An absent file is not an error: the plugin has simply never run here.
     pub fn load(&mut self) {
-        let text = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.problem = false;
-                return;
-            }
-            Err(error) => {
-                error!(
-                    "could not read {}: {error}; the homes in memory are kept",
-                    self.path.display()
-                );
-                self.problem = true;
-                return;
-            }
+        let loaded: Result<BTreeMap<String, PlayerHomes>, String> = match &mut self.backend {
+            Backend::Json => read_json(&self.path),
+            #[cfg(feature = "sqlite")]
+            Backend::Sqlite(sqlite) => sqlite.read_all().map_err(|error| error.to_string()),
+            Backend::Broken { reason } => Err(reason.clone()),
         };
 
-        match serde_json::from_str::<File>(&text) {
-            Ok(file) => {
-                self.players = file.players;
+        match loaded {
+            Ok(players) => {
+                self.players = players;
+                self.touched.clear();
                 self.problem = false;
             }
-            Err(error) => {
+            Err(reason) => {
                 // The old content is abandoned but the file is left exactly as it
                 // is, so nothing is lost and an admin can still look at it.
-                error!(
-                    "{} is not valid ({error}); it was left as written",
-                    self.path.display()
-                );
+                error!("the homes could not be read: {reason}; they were left as they are");
                 self.problem = true;
             }
         }
     }
 
-    /// Writes the file when anything has changed.
+    /// Writes the homes when anything has changed.
     pub fn save(&mut self) -> io::Result<()> {
         if !self.dirty {
             return Ok(());
@@ -113,13 +184,23 @@ impl Store {
                 "homes could not be loaded; refusing to overwrite them",
             ));
         }
-        let content = File {
-            players: self.players.clone(),
+        let written: Result<(), String> = match &mut self.backend {
+            Backend::Json => write_json(&self.path, &self.players),
+            #[cfg(feature = "sqlite")]
+            Backend::Sqlite(sqlite) => sqlite
+                .write(&self.touched, &self.players)
+                .map_err(|error| error.to_string()),
+            Backend::Broken { reason } => Err(reason.clone()),
         };
-        let text = serde_json::to_vec_pretty(&content)?;
-        self.replace_file(&text)?;
-        self.dirty = false;
-        Ok(())
+
+        match written {
+            Ok(()) => {
+                self.dirty = false;
+                self.touched.clear();
+                Ok(())
+            }
+            Err(reason) => Err(io::Error::other(reason)),
+        }
     }
 
     /// Mutations become visible only when their complete snapshot is saved.
@@ -132,45 +213,15 @@ impl Store {
         }
         let previous = self.players.clone();
         let dirty = self.dirty;
+        let touched = self.touched.clone();
         let result = body(self);
         if let Err(error) = self.save() {
             self.players = previous;
             self.dirty = dirty;
+            self.touched = touched;
             return Err(error);
         }
         Ok(result)
-    }
-
-    fn replace_file(&self, content: &[u8]) -> io::Result<()> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let name = self.path.file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "homes path has no filename")
-        })?;
-        // A stale temporary file is never treated as a valid home store or overwritten.
-        let (temporary, mut file) = loop {
-            let mut temporary_name = name.to_os_string();
-            temporary_name.push(format!(".{}.tmp", NEXT.fetch_add(1, Ordering::Relaxed)));
-            let temporary = self.path.with_file_name(temporary_name);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => break (temporary, file),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        };
-        let result = (|| {
-            file.write_all(content)?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(&temporary, &self.path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        result
     }
 
     /// The player's homes, borrowing them in place.
@@ -198,6 +249,7 @@ impl Store {
         body: impl FnOnce(&mut PlayerHomes) -> T,
     ) -> T {
         self.dirty = true;
+        self.touched.insert(uuid.to_string());
         body(self.players.entry(uuid.to_string()).or_default())
     }
 
@@ -287,6 +339,72 @@ impl Store {
             }
         });
     }
+}
+
+/// Reads the homes from a JSON file.
+///
+/// An absent file is not an error: the plugin has simply never run here. A file
+/// that cannot be parsed is an error, and the file is left exactly as it is, so
+/// that the one loss an admin cannot undo never happens.
+fn read_json(path: &std::path::Path) -> Result<BTreeMap<String, PlayerHomes>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(BTreeMap::new());
+        }
+        Err(error) => {
+            return Err(format!("{} could not be read: {error}", path.display()));
+        }
+    };
+
+    match serde_json::from_str::<File>(&text) {
+        Ok(file) => Ok(file.players),
+        Err(error) => Err(format!("{} is not valid: {error}", path.display())),
+    }
+}
+
+/// Writes the homes to a JSON file, replacing it atomically.
+///
+/// The content is written to a temporary file and renamed over the old one, so
+/// a reader never sees a half-written file and a crash never leaves one.
+fn write_json(
+    path: &std::path::Path,
+    players: &BTreeMap<String, PlayerHomes>,
+) -> Result<(), String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| "homes path has no filename".to_string())?;
+    let content = File {
+        players: players.clone(),
+    };
+    let text = serde_json::to_vec_pretty(&content).map_err(|error| error.to_string())?;
+
+    // A stale temporary file is never treated as a valid home store or overwritten.
+    let (temporary, mut file) = loop {
+        let mut temporary_name = name.to_os_string();
+        temporary_name.push(format!(".{}.tmp", NEXT.fetch_add(1, Ordering::Relaxed)));
+        let temporary = path.with_file_name(temporary_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => break (temporary, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    let result = (|| {
+        file.write_all(&text)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| error.to_string())
 }
 
 /// The empty set of homes, for a player who has none.
@@ -588,5 +706,147 @@ mod tests {
         store.with_player("nobody", |_| ());
         assert_eq!(store.player_count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The tests for the SQLite backend.
+    ///
+    /// They read the database with `rusqlite` directly, so they can see what
+    /// the plugin wrote rather than what it believes it wrote.
+    #[cfg(feature = "sqlite")]
+    mod sqlite {
+        use super::*;
+
+        fn database(dir: &std::path::Path) -> Store {
+            Store::sqlite(dir.join("homes.db"))
+        }
+
+        fn rows(dir: &std::path::Path) -> Vec<(String, i32)> {
+            let connection =
+                rusqlite::Connection::open(dir.join("homes.db")).expect("the database is there");
+            let mut statement = connection
+                .prepare("SELECT uuid, home_number FROM player_homes ORDER BY uuid, home_number")
+                .expect("the table is there");
+            let mut rows = statement.query([]).expect("the rows are readable");
+            let mut found = Vec::new();
+            while let Some(row) = rows.next().expect("the rows are readable") {
+                found.push((row.get(0).expect("uuid"), row.get(1).expect("slot")));
+            }
+            found
+        }
+
+        #[test]
+        fn a_home_survives_a_round_trip() {
+            let dir = temp();
+            let mut first = database(&dir);
+            first.set_home("uuid-a", home(1));
+            first.save().expect("saved");
+
+            let mut second = database(&dir);
+            second.load();
+            assert!(!second.has_problem());
+            assert_eq!(second.home_numbers("uuid-a"), vec![1]);
+            let read = second.with_player("uuid-a", |player| player.find(1).cloned());
+            assert_eq!(read, Some(home(1)));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_dimension_and_a_name_survive_the_round_trip() {
+            // The two fields that are `null` in a legacy record, and the two
+            // that a rename writes.
+            let dir = temp();
+            let mut first = database(&dir);
+            let row = home(1)
+                .in_dimension("minecraft:the_nether".to_string())
+                .in_dimension("minecraft:the_nether".to_string());
+            first.set_home("uuid-a", row);
+            assert!(first.rename_home("uuid-a", 1, "base"));
+            first.save().expect("saved");
+
+            let mut second = database(&dir);
+            second.load();
+            let read = second.with_player("uuid-a", |player| player.find(1).cloned());
+            let read = read.expect("the home");
+            assert_eq!(read.dimension.as_deref(), Some("minecraft:the_nether"));
+            assert_eq!(read.name.as_deref(), Some("base"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn only_the_player_who_changed_is_rewritten() {
+            // A save writes the players whose homes changed, and only those. A
+            // row another player owns is left exactly as it was, so a second
+            // server writing the same database does not have its rows pulled
+            // out from under it.
+            let dir = temp();
+            let mut first = database(&dir);
+            first.set_home("uuid-a", home(1));
+            first.set_home("uuid-b", home(1));
+            first.save().expect("saved");
+
+            // A row written by something else, which a full rewrite would lose.
+            let connection = rusqlite::Connection::open(dir.join("homes.db")).expect("open");
+            connection
+                .execute(
+                    "UPDATE player_homes SET x = 42.0 WHERE uuid = 'uuid-b'",
+                    [],
+                )
+                .expect("tampered");
+            drop(connection);
+
+            let mut second = database(&dir);
+            second.load();
+            second.set_home("uuid-a", home(2));
+            second.save().expect("saved");
+
+            let connection = rusqlite::Connection::open(dir.join("homes.db")).expect("open");
+            let x: f64 = connection
+                .query_row(
+                    "SELECT x FROM player_homes WHERE uuid = 'uuid-b' AND home_number = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("the row is still there");
+            assert_eq!(x, 42.0, "another player's row was not rewritten");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_player_who_lost_every_home_has_no_rows_left() {
+            let dir = temp();
+            let mut first = database(&dir);
+            first.set_home("uuid-a", home(1));
+            first.save().expect("saved");
+            assert_eq!(rows(&dir), vec![("uuid-a".to_string(), 1)]);
+
+            assert!(first.delete_home("uuid-a", 1));
+            first.save().expect("saved");
+            assert!(rows(&dir).is_empty(), "the rows are gone");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn the_json_file_is_not_written_when_sqlite_is_used() {
+            let dir = temp();
+            let mut first = database(&dir);
+            first.set_home("uuid-a", home(1));
+            first.save().expect("saved");
+            assert!(!dir.join("homes.json").exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn a_database_that_cannot_be_opened_refuses_to_write() {
+            // A store that cannot open its database reads nothing and writes
+            // nothing, rather than falling back to another file and splitting
+            // the homes across two of them.
+            let dir = temp();
+            let mut store = Store::sqlite(dir.join("missing").join("homes.db"));
+            store.load();
+            assert!(store.has_problem());
+            store.set_home("uuid-a", home(1));
+            assert!(store.save().is_err());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

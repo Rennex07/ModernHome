@@ -103,6 +103,18 @@ pub struct Config {
     confirm_layout: ConfirmLayout,
 }
 
+/// Where the homes are kept.
+///
+/// Chosen by `database.yml`'s `storage`. The JSON backend is the default,
+/// because it is the one that needs nothing but the data folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Storage {
+    /// One JSON file, replaced atomically after every change.
+    Json,
+    /// A SQLite database, one row per home.
+    Sqlite,
+}
+
 /// What [`load`] could and could not read.
 ///
 /// A `problems` entry names the file and the parser's message. It is reported at
@@ -222,6 +234,42 @@ impl Config {
             .and_then(|store| store.get("file"))
             .and_then(Value::as_str)
             .unwrap_or("homes.json")
+            .to_string()
+    }
+
+    /// `database.yml`'s `storage`, defaulting to the JSON backend.
+    ///
+    /// An unknown name is reported and the JSON backend is used, because a
+    /// typo must not leave the plugin without a store.
+    #[must_use]
+    pub fn storage(&self) -> Storage {
+        match self
+            .database
+            .get("storage")
+            .and_then(Value::as_str)
+            .map(str::trim)
+        {
+            Some("sqlite") => Storage::Sqlite,
+            Some("json") => Storage::Json,
+            other => {
+                if let Some(name) = other {
+                    tracing::warn!(
+                        "`storage: {name}` is not a backend this plugin knows; the JSON store is used"
+                    );
+                }
+                Storage::Json
+            }
+        }
+    }
+
+    /// `database.yml`'s `sqlite.file`, defaulting to `"homes.db"`.
+    #[must_use]
+    pub fn sqlite_file(&self) -> String {
+        self.database
+            .get("sqlite")
+            .and_then(|sqlite| sqlite.get("file"))
+            .and_then(Value::as_str)
+            .unwrap_or("homes.db")
             .to_string()
     }
 
@@ -699,6 +747,7 @@ mod tests {
         match slot {
             "main" => config.main = parsed,
             "sounds" => config.sounds = parsed,
+            "database" => config.database = parsed,
             _ => unreachable!("unknown slot"),
         }
         config
@@ -712,5 +761,32 @@ mod tests {
             .and_then(Value::as_str)
             .expect("prefix ships")
             .to_string()
+    }
+
+    #[test]
+    fn the_json_store_is_the_default() {
+        let config = Config::defaults();
+        assert_eq!(config.storage(), Storage::Json);
+        assert_eq!(config.store_file(), "homes.json");
+        assert_eq!(config.sqlite_file(), "homes.db");
+    }
+
+    #[test]
+    fn the_sqlite_store_is_chosen_by_name() {
+        let config = with("storage: sqlite", "database");
+        assert_eq!(config.storage(), Storage::Sqlite);
+    }
+
+    #[test]
+    fn an_unknown_store_name_falls_back_to_the_json_store() {
+        // A typo must not leave the plugin without a store.
+        let config = with("storage: sqlited", "database");
+        assert_eq!(config.storage(), Storage::Json);
+    }
+
+    #[test]
+    fn the_sqlite_file_can_be_named() {
+        let config = with("sqlite:\n  file: homes.sqlite3", "database");
+        assert_eq!(config.sqlite_file(), "homes.sqlite3");
     }
 }

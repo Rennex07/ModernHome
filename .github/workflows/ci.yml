@@ -34,3 +34,42 @@ jobs:
         working-directory: plugin
       - run: cargo build --locked --offline --release --target wasm32-wasip3
         working-directory: plugin
+
+  # The SQLite backend compiles SQLite from C, so it needs a C compiler for the
+  # target. The wasi-sdk clang is the one that targets wasm, and the build
+  # script finds it through `cc`.
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: Pumpkin-MC/Pumpkin
+          ref: 224f9f8144ca53a8d0800acb87607d714196e2a6
+          path: Pumpkin-release
+      - run: rustup show
+        working-directory: plugin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugin
+      - name: Install the wasi-sdk
+        run: |
+          curl -sSL -o wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+          tar -xzf wasi-sdk.tar.gz
+          echo "WASI_SDK=$PWD/wasi-sdk-34.0-x86_64-linux" >> "$GITHUB_ENV"
+      - run: cargo fetch --locked
+        working-directory: plugin
+      - name: Test the SQLite backend
+        run: cargo test --locked --offline --features sqlite
+        working-directory: plugin
+        env:
+          CC_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/wasm32-wasip3-clang
+          AR_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/llvm-ar
+      - run: cargo build --locked --offline --release --target wasm32-wasip3 --features sqlite
+        working-directory: plugin
+        env:
+          CC_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/wasm32-wasip3-clang
+          AR_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/llvm-ar

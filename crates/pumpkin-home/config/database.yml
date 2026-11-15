@@ -1,9 +1,29 @@
 # Where the plugin's homes are kept, relative to its data folder.
 #
-# The Paper original stored homes in SQLite or MySQL. A Pumpkin plugin runs as a
-# WebAssembly component inside a WASI sandbox that is granted exactly one
-# directory - its own data folder - and neither a SQLite driver nor a MySQL
-# client can be linked into a component, so the homes live in a JSON file here
-# instead. The row shape is the same one the SQL table had.
+# Two backends are available:
+#
+#   json    - one JSON file, replaced atomically after every change. This is
+#             the default. The row shape is the same one the Paper plugin's
+#             `player_homes` table had, so a store written by this plugin is
+#             readable by eye.
+#
+#   sqlite  - a SQLite database, one row per home, keyed by the player's uuid
+#             and the slot the home occupies. A save rewrites only the players
+#             whose homes changed, in one transaction.
+#
+# The two backends are two different files: switching between them does not
+# move the homes, and the file that is left behind is left exactly as it was.
+#
+# A remote MySQL or MariaDB server is not offered. There is no MySQL client
+# that can be linked into a WebAssembly component for the host this plugin runs
+# on, and a plugin that cannot reach the database is worse than one that keeps
+# a file.
+storage: json
+
+# The JSON backend's file.
 store:
   file: homes.json
+
+# The SQLite backend's database file.
+sqlite:
+  file: homes.db

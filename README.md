@@ -17,6 +17,28 @@ Use the Rust 1.100.0 toolchain pinned in `rust-toolchain.toml` and fetch depende
 with `cargo fetch --locked` before an offline build. The server must support WASIp3
 as well as the pinned plugin WIT.
 
+### The SQLite backend
+
+The SQLite backend is a Cargo feature, because SQLite is compiled from C and that
+needs a C compiler for the target:
+
+```sh
+cargo build --locked --offline --release --target wasm32-wasip3 --features sqlite
+```
+
+For a wasm target that compiler is the [wasi-sdk](https://github.com/WebAssembly/wasi-sdk)
+clang, and `cc` has to be told where it is:
+
+```sh
+export CC_wasm32_wasip3="$WASI_SDK/bin/wasm32-wasip3-clang"
+export AR_wasm32_wasip3="$WASI_SDK/bin/llvm-ar"
+cargo build --locked --offline --release --target wasm32-wasip3 --features sqlite
+```
+
+Without the feature the plugin keeps the JSON backend only, and a `database.yml`
+that asks for SQLite is reported rather than silently ignored. The released
+artifact is built with the feature, so an installed plugin has both backends.
+
 When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome`.
 
 ## Usage
@@ -32,11 +54,13 @@ When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinh
 
 ## Differences and testing
 
-Homes use a JSON file rather than SQL. Redis cross-server transport, EssentialsX import and offline player lookup are not available. GUI behavior depends on Pumpkin's inventory API; the close-screen workaround is Java-client-specific. Existing GUI and message configurations may be reused, but defaults have been restyled.
+Homes are kept in a JSON file by default, or in a SQLite database when `database.yml` says `storage: sqlite`. A remote MySQL or MariaDB server is not offered: there is no MySQL client that can be linked into a WebAssembly component for the host this plugin runs on. Redis cross-server transport, EssentialsX import and offline player lookup are not available. GUI behavior depends on Pumpkin's inventory API; the close-screen workaround is Java-client-specific. Existing GUI and message configurations may be reused, but defaults have been restyled.
 
 New homes record both the world folder and dimension. Older home records are preserved; if their world name matches several loaded dimensions, teleporting is refused rather than guessing. Set those homes again in the correct dimension, or restore the correct dimension identifier from a trusted backup.
 
 Home changes are saved through a temporary file and atomic replacement. If saving fails, the change is rolled back in memory and the player receives a failure message. Keep regular backups of `homes.json`.
+
+The JSON and SQLite backends are two different files. Switching between them does not move the homes, and the file that is left behind is left exactly as it was.
 
 The pure logic is unit-tested; GUI, teleport and event handling still require an in-game check. On a scratch server, test setting, renaming and deleting a home, teleport countdown and cancellation, admin permissions and a restart. Check the screens with a real client.
 

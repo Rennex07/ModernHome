@@ -229,14 +229,14 @@ pub fn folder() -> Option<String> {
     DATA_FOLDER.get().cloned()
 }
 
-/// Opens the store at `path` if it has not been opened yet.
+/// Opens the store if it has not been opened yet.
 ///
 /// # Panics
 ///
 /// Never. The `OnceLock` is set at most once and the `Mutex` recovers from
 /// poisoning.
-pub fn open_store(path: std::path::PathBuf) {
-    STORE.get_or_init(|| Mutex::new(Store::at(path)));
+pub fn open_store(store: crate::store::Store) {
+    STORE.get_or_init(|| Mutex::new(store));
 }
 
 /// Runs `body` against the store, releasing the lock before anything else

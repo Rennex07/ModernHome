@@ -20,3 +20,19 @@ serde.workspace = true
 serde_norway.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+# The SQLite backend. `bundled` compiles SQLite itself, so the plugin does not
+# need a SQLite installation; `wasm32-wasi-vfs` is the file system shim SQLite
+# uses under WASI. Both are only compiled for a wasm target, so a native build
+# is unaffected by the second one.
+#
+# Building this for wasm needs a C compiler for the target: see the README.
+rusqlite = { version = "0.42", default-features = false, features = [
+    "bundled",
+    "wasm32-wasi-vfs",
+], optional = true }
+
+[features]
+# The SQLite backend. Without it the plugin keeps the JSON backend only, and a
+# `database.yml` that asks for SQLite is reported rather than silently ignored.
+default = []
+sqlite = ["dep:rusqlite"]

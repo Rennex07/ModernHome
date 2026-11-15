@@ -1,9 +1,10 @@
 //! ModernHome, a homes plugin for Pumpkin.
 //!
 //! This port provides home-management commands and two configurable inventory
-//! screens. Homes are stored as JSON; SQL storage, Redis transport, offline player
-//! lookup and EssentialsX import are not implemented. The host has permission-
-//! controlled networking, but this plugin does not use it.
+//! screens. Homes are stored as JSON, or in a SQLite database when
+//! `database.yml` asks for it; a remote MySQL server, Redis transport, offline
+//! player lookup and EssentialsX import are not implemented. The host has
+//! permission-controlled networking, but this plugin does not use it.
 //!
 //! Home destinations include both the world folder and dimension. Legacy records
 //! without a dimension are refused when their destination is ambiguous.
@@ -50,6 +51,8 @@ pub mod screens;
 pub mod sounds;
 pub mod state;
 pub mod store;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod teleport;
 pub mod text;
 
@@ -147,8 +150,17 @@ impl Plugin for PumpkinHome {
 
         // The store is bound before the configuration is installed, because the
         // file name lives in `database.yml`.
-        let path = std::path::Path::new(&folder).join(loaded.value.store_file());
-        state::open_store(path);
+        let store = match loaded.value.storage() {
+            config::Storage::Json => {
+                let path = std::path::Path::new(&folder).join(loaded.value.store_file());
+                store::Store::at(path)
+            }
+            config::Storage::Sqlite => {
+                let path = std::path::Path::new(&folder).join(loaded.value.sqlite_file());
+                store::Store::sqlite(path)
+            }
+        };
+        state::open_store(store);
         state::with_store(store::Store::load);
         state::install(loaded.value);
 
