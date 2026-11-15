@@ -4,7 +4,7 @@
 
 # How long (in seconds) it takes to teleport to a home
 # Players must stand still during this countdown.
-# Players with the home.admin permission bypass this delay.
+# Players with the ModernHome:admin permission bypass this delay.
 teleport-time: 5
 
 # How long (in seconds) a player cannot teleport after taking damage (combat)
@@ -28,7 +28,7 @@ blacklisted-worlds:
 # The highest home-limit permission this plugin will look for.
 #
 # A player's maximum homes is the largest N for which they hold
-# `advancedhomes.limit.N` (default 1). Pumpkin's permission API has no way to
+# `ModernHome:limit.N` (default 1). Pumpkin's permission API has no way to
 # list a player's permissions - only to ask about one node at a time - so the
 # plugin probes 1..=this number and takes the highest one that is granted.
 #

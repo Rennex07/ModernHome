@@ -2,16 +2,9 @@
 //!
 //! ## Where the permission checks live
 //!
-//! `context.register_command` attaches one node to the whole tree, so the coarse
-//! check is a `ModernHome:` node on the root - which is `Allow`, deliberately,
-//! because an unregistered node resolves to `false` for everyone at every op level
-//! and the command would report "Unknown command" to everybody.
-//!
-//! The real gate is `home.admin`, checked inside every admin handler exactly where
-//! Paper checked it. The per-node alternative,
-//! `command-node.require-with-handler-id`, is a stub on this host that returns
-//! `Err("require_with_handler_id not implemented")` and traps the command
-//! (`wasm_host/wit/v0_1/commands/mod.rs:763`), so it is not used.
+//! `context.register_command` attaches a permission to the whole tree. Home
+//! commands default to allowed; `/ahome` uses `ModernHome:admin`, which defaults
+//! to operator level 2. Admin handlers recheck that same node.
 //!
 //! ## Every failure is the plugin's own message
 //!
@@ -59,16 +52,7 @@ fn not_a_player(sender: &CommandSender) -> Result<i32, CommandError> {
 }
 
 fn is_admin(sender: &CommandSender, server: &Server) -> bool {
-    if sender.has_permission(server, permissions::ADMIN) {
-        return true;
-    }
-    match sender.as_player() {
-        Some(player) => server.get_op_manager().is_op(player.get_id()),
-        // A console has no uuid to ask about, and the host grants it every
-        // permission anyway. Asked rather than assumed, so the answer is the
-        // host's.
-        None => sender.is_console(),
-    }
+    sender.has_permission(server, permissions::ADMIN)
 }
 
 fn guard(sender: &CommandSender, server: &Server) -> Result<bool, CommandError> {

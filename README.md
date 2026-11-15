@@ -17,13 +17,16 @@ Use the Rust 1.100.0 toolchain pinned in `rust-toolchain.toml` and fetch depende
 with `cargo fetch --locked` before an offline build. The server must support WASIp3
 as well as the pinned plugin WIT.
 
-When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome` and command-root grants to `ModernHome:home` or `ModernHome:ahome`.
+When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome`.
 
 ## Usage
 
 - `/home` opens the homes screen; `/sethome` saves a home; `/delhome <number>` deletes one.
 - `/ahome reload`, `/ahome help`, `/ahome see <player>` and `/ahome osee <player>` are administrative commands.
-- `home.admin` grants administrative access; `advancedhomes.limit.N` sets a home limit. The largest granted N wins, up to `home-limit-scan-max` in the configuration.
+- `ModernHome:home` allows home commands and defaults to allowed.
+- `ModernHome:admin` allows `/ahome`, administrative actions, unlimited homes and instant teleports. It defaults to operator level 2; ordinary players are not shown `/ahome` in Pumpkin's command tree. Explicit permission denials are respected.
+- `ModernHome:limit.N` sets a home limit, for example `ModernHome:limit.10`. The largest granted N wins, up to `home-limit-scan-max` in the configuration. Non-admins without a limit grant get one home.
+- Permission names are case-sensitive. Replace legacy `home.admin` grants with `ModernHome:admin` and `advancedhomes.limit.N` grants with `ModernHome:limit.N`. The former `ModernHome:ahome` root grant is replaced by `ModernHome:admin`.
 - Messages, GUI layouts and sounds are configurable in the plugin data directory. Defaults are written only when files are missing: updating the plugin does not overwrite existing configurations.
 - The rename prompts are configured in `gui/homes.yml` using `home_rename` and `home_rename_actionbar`.
 

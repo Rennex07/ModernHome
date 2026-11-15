@@ -33,7 +33,7 @@ use pumpkin_plugin_api::{
         EntityDamageByEntityEvent, EventData, EventHandler, EventPriority, InventoryClickEvent,
         InventoryCloseEvent, PlayerChatEvent, PlayerJoinEvent, PlayerLeaveEvent,
     },
-    permission::{Permission, PermissionDefault},
+    permission::{Permission, PermissionDefault, PermissionLevel},
     player::Player,
 };
 
@@ -69,23 +69,9 @@ const SET_HOME: [&str; 1] = ["sethome"];
 const DEL_HOME: [&str; 3] = ["delhome", "deletehome", "rmhome"];
 const ADMIN: [&str; 1] = ["ahome"];
 
-/// The command node each command tree is gated behind.
-///
-/// `register_command` attaches exactly one node to the whole tree and **prefixes it
-/// with the plugin name if it has no colon** (`plugin/api/context.rs:202-206`). An
-/// empty node would therefore become `ModernHome:`, which is in no registry, which
-/// resolves to `false` for everybody at every op level - and the command would
-/// report "Unknown command" to everyone. So every command is registered with a node
-/// that exists, and the real gate is checked inside the handler against the Paper
-/// node `home.admin`, exactly where Paper checked it.
-///
-/// The default is `Allow` for the same reason: the plugin's own `no-permission`
-/// message is what Paper's handler sent, and an op-only default would replace it
-/// with the host's "Unknown command".
-///
-/// The namespace must match [`PLUGIN`] exactly, including case.
+/// Command gates use the exact, case-sensitive namespace required by Pumpkin.
 const USE_HOME: &str = "ModernHome:home";
-const USE_ADMIN: &str = "ModernHome:ahome";
+const USE_ADMIN: &str = "ModernHome:admin";
 
 /// Every node this plugin registers.
 ///
@@ -237,19 +223,21 @@ impl Plugin for PumpkinHome {
 
 fn register_nodes(context: &Context) -> usize {
     let mut registered = 0;
-    for node in COMMAND_NODES {
+    for (node, default) in command_permissions() {
         // Not a failure: registration is not idempotent on the host, and a repeat
         // means the node is there.
-        if register(
-            context,
-            node,
-            "A ModernHome command.",
-            PermissionDefault::Allow,
-        ) {
+        if register(context, node, "A ModernHome command.", default) {
             registered += 1;
         }
     }
     registered
+}
+
+fn command_permissions() -> [(&'static str, PermissionDefault); 2] {
+    [
+        (USE_HOME, PermissionDefault::Allow),
+        (USE_ADMIN, PermissionDefault::Op(PermissionLevel::Two)),
+    ]
 }
 
 /// Registers one node, logging a real failure and ignoring a repeat.
@@ -932,16 +920,23 @@ mod tests {
 
     #[test]
     fn no_node_is_registered_without_a_colon() {
-        // `register_command` prefixes a colonless node with the plugin name, so
-        // `home.admin` would become `pumpkinhome:home.admin` - a node this plugin
-        // cannot register, and therefore never resolvable.
         for node in COMMAND_NODES {
             assert!(node.contains(':'), "{node} has no namespace of its own");
         }
-        // Which is also why the runtime check is against the Paper node, spelled
-        // exactly as Paper spelled it.
-        assert_eq!(permissions::ADMIN, "home.admin");
-        assert_eq!(permissions::LIMIT_PREFIX, "advancedhomes.limit.");
+        assert_eq!(permissions::ADMIN, USE_ADMIN);
+        assert_eq!(permissions::LIMIT_PREFIX, "ModernHome:limit.");
+    }
+
+    #[test]
+    fn admin_command_visibility_and_handler_use_the_same_op_only_permission() {
+        let [(home, home_default), (admin, admin_default)] = command_permissions();
+        assert_eq!(home, USE_HOME);
+        assert!(matches!(home_default, PermissionDefault::Allow));
+        assert_eq!(admin, permissions::ADMIN);
+        assert!(matches!(
+            admin_default,
+            PermissionDefault::Op(PermissionLevel::Two)
+        ));
     }
 
     #[test]

@@ -70,7 +70,7 @@ pub const DEFAULT_CONFIRM_LAYOUT: [&str; 3] = ["---------", "--d-h-a--", "----g-
 const DEFAULT_TELEPORT_TIME: i32 = 5;
 /// The default combat window, in seconds.
 const DEFAULT_COMBAT_DELAY: i32 = 5;
-/// The default home limit for a player who holds no `advancedhomes.limit.N`.
+/// The default home limit for a player who holds no `ModernHome:limit.N`.
 const DEFAULT_LIMIT_SCAN_MAX: i32 = 256;
 /// Fallback when `items.previous-page-slot` is missing.
 const DEFAULT_PREVIOUS_SLOT: u32 = 45;

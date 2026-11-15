@@ -285,8 +285,8 @@ pub fn clear_destinations() {
 /// 1. Any countdown already running is cancelled **silently** - no message, no
 ///    sound. Starting a second teleport while one is waiting was how a second
 ///    click was absorbed.
-/// 2. An admin - `home.admin`, or an operator, which is what Paper's
-///    `default: op` meant - is teleported at once. Success message and sound, no
+/// 2. An admin holding `ModernHome:admin`, including its operator default,
+///    is teleported at once. Success message and sound, no
 ///    countdown, and no actionbar. The wait is skipped, not shortened.
 /// 3. A player struck inside the combat window is refused over chat with the error
 ///    sound. No actionbar on this path, unlike a cancellation *during* a countdown,
