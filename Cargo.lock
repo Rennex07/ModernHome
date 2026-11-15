@@ -249,7 +249,7 @@ dependencies = [
 name = "pumpkin-home"
 version = "1.0.0"
 dependencies = [
- "pumpkin-plugin-api",
+ "pumpkin-plugin-api-v0_2",
  "rusqlite",
  "serde",
  "serde_json",
@@ -258,8 +258,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "pumpkin-plugin-api"
-version = "0.2.1+26.3-26.51"
+name = "pumpkin-plugin-api-v0_2"
+version = "0.2.2+26.3-26.60"
+source = "git+https://github.com/Pumpkin-MC/Pumpkin?rev=cc9102bd2646b51a7d419eaec99d27594d4a55d4#cc9102bd2646b51a7d419eaec99d27594d4a55d4"
 dependencies = [
  "postcard",
  "serde_json",

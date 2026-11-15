@@ -31,7 +31,8 @@
 //! it does not recognise. Nothing is logged on any of them - Paper logged nothing
 //! either.
 
-use pumpkin_plugin_api::player::{Player, SoundCategory};
+use pumpkin_plugin_api_v0_2::host::sounds::SoundCategory;
+use pumpkin_plugin_api_v0_2::player::Player;
 
 /// The category every sound in `sounds.yml` is played in.
 ///

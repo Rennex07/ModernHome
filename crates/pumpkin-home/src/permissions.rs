@@ -8,7 +8,7 @@
 //! `home-limit-scan-max`. Limits are refreshed before menu actions so an open
 //! screen cannot retain a revoked grant.
 
-use pumpkin_plugin_api::{Server, player::Player};
+use pumpkin_plugin_api_v0_2::player::Player;
 
 /// The node that makes a player an admin: unlimited homes, no teleport delay.
 pub const ADMIN: &str = crate::USE_ADMIN;
@@ -19,23 +19,23 @@ pub const LIMIT_PREFIX: &str = "ModernHome:limit.";
 /// Whether `player` is an admin.
 ///
 /// The registered default grants operators access; explicit denials still win.
-pub fn is_admin(_server: &Server, player: &Player) -> bool {
-    player.has_permission(ADMIN)
+///
+/// The check is a host call in the v0.2 API, so it is awaited: the server that
+/// answers it is the one the call is made on.
+pub async fn is_admin(player: &Player) -> bool {
+    player.has_permission(ADMIN.to_string()).await
 }
 
 /// Rechecked at each GUI action and when a pending chat rename is submitted.
-pub fn can_manage(server: &Server, player: &Player, target: &str) -> bool {
+pub async fn can_manage(player: &Player, target: &str) -> bool {
     let own = crate::state::uuid_of(player) == target;
     let root = if own {
         crate::USE_HOME
     } else {
         crate::USE_ADMIN
     };
-    access_allowed(
-        own,
-        player.has_permission(root),
-        !own && is_admin(server, player),
-    )
+    let admin = !own && is_admin(player).await;
+    access_allowed(own, player.has_permission(root.to_string()).await, admin)
 }
 
 fn access_allowed(own: bool, root: bool, admin: bool) -> bool {
@@ -50,14 +50,17 @@ fn access_allowed(own: bool, root: bool, admin: bool) -> bool {
 /// Everyone else gets the largest `ModernHome:limit.N` they hold, with a floor
 /// of 1: Paper's loop started at `max = 1` and only ever raised it, so a player
 /// with no limit permission has a single home.
-pub fn max_homes(server: &Server, player: &Player, scan_max: i32) -> i32 {
-    if is_admin(server, player) {
+pub async fn max_homes(player: &Player, scan_max: i32) -> i32 {
+    if is_admin(player).await {
         return i32::MAX;
     }
 
     let mut max = 1;
     for candidate in 1..=scan_max.max(1) {
-        if player.has_permission(&format!("{LIMIT_PREFIX}{candidate}")) {
+        if player
+            .has_permission(format!("{LIMIT_PREFIX}{candidate}"))
+            .await
+        {
             max = candidate;
         }
     }

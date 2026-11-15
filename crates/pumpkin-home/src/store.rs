@@ -787,10 +787,7 @@ mod tests {
             // A row written by something else, which a full rewrite would lose.
             let connection = rusqlite::Connection::open(dir.join("homes.db")).expect("open");
             connection
-                .execute(
-                    "UPDATE player_homes SET x = 42.0 WHERE uuid = 'uuid-b'",
-                    [],
-                )
+                .execute("UPDATE player_homes SET x = 42.0 WHERE uuid = 'uuid-b'", [])
                 .expect("tampered");
             drop(connection);
 

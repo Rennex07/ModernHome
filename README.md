@@ -4,7 +4,13 @@ A Pumpkin Wasm port of [AdvancedHome](https://github.com/Rennex07/AdvancedHome).
 
 ## Build
 
-The plugin API is taken from the sibling `Pumpkin-release` checkout. Use the same WIT as the server; the current local checkout is Pumpkin 0.2.1.
+The plugin targets the **v0.2 plugin API** and is built for **WASIp3**. The v0.2
+API is the one that runs on a Pumpkin built with the `plugin-v0_2` feature, and
+WASIp3 is the WASI version that API's host links.
+
+The v0.2 SDK is not published yet, so the crate pins it to the exact upstream
+commit that carries it (upstream PR #3962). A component only loads on a server
+whose WIT matches the one it was built against, so the pin is not a preference.
 
 ```sh
 cargo test
@@ -14,8 +20,11 @@ cargo build --locked --offline --release --target wasm32-wasip3
 Install `target/wasm32-wasip3/release/pumpkin_home.wasm` in the server's plugin directory.
 
 Use the Rust 1.100.0 toolchain pinned in `rust-toolchain.toml` and fetch dependencies
-with `cargo fetch --locked` before an offline build. The server must support WASIp3
-as well as the pinned plugin WIT.
+with `cargo fetch --locked` before an offline build.
+
+A server built from released Pumpkin cannot load this plugin: the released
+builds leave the v0.2 API off, and the v0.1 API only accepts WASIp2. See
+[API-AUDIT.md](API-AUDIT.md).
 
 ### The SQLite backend
 

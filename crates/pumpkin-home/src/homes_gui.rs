@@ -36,7 +36,7 @@
 //! in the viewer's [`Session`](crate::state::Session), and a viewer only ever has
 //! one open at a time.
 
-use pumpkin_plugin_api::common::ClickType;
+use pumpkin_plugin_api_v0_2::common::ClickType;
 
 use crate::{
     config::Config,

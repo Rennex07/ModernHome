@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
-use pumpkin_plugin_api::{Server, player::Player};
+use pumpkin_plugin_api_v0_2::{Server, player::Player};
 
 use crate::{config::Config, homes::Home, store::Store};
 
@@ -59,7 +59,7 @@ pub(crate) fn recover<T>(result: std::sync::LockResult<MutexGuard<'_, T>>) -> Mu
 /// it is a record of two integers that survives being written to a file and read
 /// back, which is more than can be said for a resource handle.
 pub fn uuid_of(player: &Player) -> String {
-    pumpkin_plugin_api::uuid::to_string(player.get_id())
+    pumpkin_plugin_api_v0_2::uuid::to_string(player.get_id())
 }
 
 /// The player `uuid` is online as, or [`None`] when they are not.
@@ -68,7 +68,7 @@ pub fn uuid_of(player: &Player) -> String {
 /// this plugin keeps one: `Player` is consumed by the calls that take it, so a
 /// handle has a lifetime measured in one function.
 pub fn player_of(server: &Server, uuid: &str) -> Option<Player> {
-    let id = pumpkin_plugin_api::uuid::parse(uuid)?;
+    let id = pumpkin_plugin_api_v0_2::uuid::parse(uuid)?;
     server.get_player_by_uuid(id)
 }
 

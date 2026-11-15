@@ -15,7 +15,12 @@ crate-type = ["cdylib"]
 # The library, never `pumpkin-pie-plugin`. Every Pumpkin plugin exports a symbol
 # called `init-plugin`, so linking two crates that export one is a
 # duplicate-symbol error.
-pumpkin-plugin-api = "0.2.0"
+#
+# This is the v0.2 plugin SDK, which is the one that can be built for WASIp3.
+# It is not published yet, so it is pinned to the exact upstream commit that
+# carries it: a different commit is a different API, and a plugin built against
+# the wrong one is rejected when the host type-checks it.
+pumpkin-plugin-api-v0_2 = { git = "https://github.com/Pumpkin-MC/Pumpkin", rev = "cc9102bd2646b51a7d419eaec99d27594d4a55d4" }
 serde.workspace = true
 serde_norway.workspace = true
 serde_json.workspace = true

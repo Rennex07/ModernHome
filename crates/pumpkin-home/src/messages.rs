@@ -22,8 +22,8 @@
 //! was sent to *both*, through `cancelWithMessage`, so turning chat off does not
 //! silence it - it moves it entirely to the actionbar.
 
-use pumpkin_plugin_api::player::Player;
-use pumpkin_plugin_api::text::TextComponent;
+use pumpkin_plugin_api_v0_2::player::Player;
+use pumpkin_plugin_api_v0_2::text::TextComponent;
 
 use crate::{config::Config, text};
 

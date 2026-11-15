@@ -27,16 +27,38 @@
 //! [`homes_gui`], [`confirm_gui`] and [`teleport`], where they are tested without
 //! a server. This file wires them to the host and does the I/O.
 
-use pumpkin_plugin_api::{
+use pumpkin_plugin_api_v0_2::{
     Context, Plugin, PluginMetadata, Server,
     command::{ArgumentType, Command, CommandError, CommandNode, CommandSender, StringType},
-    events::{
-        EntityDamageByEntityEvent, EventData, EventHandler, EventPriority, InventoryClickEvent,
-        InventoryCloseEvent, PlayerChatEvent, PlayerJoinEvent, PlayerLeaveEvent,
-    },
+    events::{EventData, EventHandler, EventPriority, PlayerChatEvent, PlayerJoinEvent},
     permission::{Permission, PermissionDefault, PermissionLevel},
     player::Player,
 };
+
+// The events this plugin listens to that the SDK does not ship a marker for.
+//
+// The SDK ships `PlayerJoinEvent`, `PlayerChatEvent` and `ServerTickStartEvent`;
+// the other three are added here with the SDK's own macro, so the marker, the
+// event type and the data record cannot drift apart.
+pumpkin_plugin_api_v0_2::define_event! {
+    /// A player left the server
+    PlayerLeaveEvent => pumpkin_plugin_api_v0_2::host::event::PlayerLeaveEventData
+}
+
+pumpkin_plugin_api_v0_2::define_event! {
+    /// A player clicked a slot in an inventory
+    InventoryClickEvent => pumpkin_plugin_api_v0_2::host::event::InventoryClickEventData
+}
+
+pumpkin_plugin_api_v0_2::define_event! {
+    /// A player closed an inventory
+    InventoryCloseEvent => pumpkin_plugin_api_v0_2::host::event::InventoryCloseEventData
+}
+
+pumpkin_plugin_api_v0_2::define_event! {
+    /// An entity was damaged by another entity
+    EntityDamageByEntityEvent => pumpkin_plugin_api_v0_2::host::event::EntityDamageByEntityEventData
+}
 
 pub mod commands;
 pub mod config;
@@ -49,10 +71,10 @@ pub mod messages;
 pub mod permissions;
 pub mod screens;
 pub mod sounds;
-pub mod state;
-pub mod store;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+pub mod state;
+pub mod store;
 pub mod teleport;
 pub mod text;
 
@@ -131,13 +153,13 @@ impl Plugin for PumpkinHome {
                 //
                 // The host asks for these interactively on first load, and skips
                 // the plugin when it cannot ask.
-                pumpkin_plugin_api::permissions::FS_READ_DATA.to_string(),
-                pumpkin_plugin_api::permissions::FS_WRITE_DATA.to_string(),
+                pumpkin_plugin_api_v0_2::permissions::FS_READ_DATA.to_string(),
+                pumpkin_plugin_api_v0_2::permissions::FS_WRITE_DATA.to_string(),
             ],
         }
     }
 
-    fn on_load(&self, context: Context) -> pumpkin_plugin_api::Result<()> {
+    async fn on_load(&self, context: Context) -> pumpkin_plugin_api_v0_2::Result<()> {
         let folder = context.get_data_folder();
         // `set` rather than `get_or_init`: `on_load` runs once, and a second
         // `get_or_init` would be silently wrong if it ever did not.
@@ -174,42 +196,26 @@ impl Plugin for PumpkinHome {
         // Chat is blocking, because a pending rename has to be able to swallow the
         // message; a non-blocking handler's return value is discarded by the host,
         // so `cancelled` would never be read back.
-        context.register_event_handler::<PlayerChatEvent, _>(
-            OnChat,
-            EventPriority::Normal,
-            true,
-        )?;
+        context.register_event_handler::<PlayerChatEvent, _>(OnChat, EventPriority::Normal, true);
         // Clicks are blocking for the same reason: the whole point is cancelling.
         context.register_event_handler::<InventoryClickEvent, _>(
             OnClick,
             EventPriority::Normal,
             true,
-        )?;
+        );
         // Close is observational - `InventoryCloseEventData` has no `cancelled`
         // field - but it still has to run, so it is registered blocking only so it
         // is ordered after the click handler rather than before it.
-        context.register_event_handler::<InventoryCloseEvent, _>(
-            OnClose,
-            EventPriority::Low,
-            true,
-        )?;
+        context.register_event_handler::<InventoryCloseEvent, _>(OnClose, EventPriority::Low, true);
         // Damage only records a timestamp, so there is nothing to give back.
         context.register_event_handler::<EntityDamageByEntityEvent, _>(
             OnDamage,
             EventPriority::Normal,
             false,
-        )?;
+        );
         // Join and leave are bookkeeping.
-        context.register_event_handler::<PlayerJoinEvent, _>(
-            OnJoin,
-            EventPriority::Normal,
-            false,
-        )?;
-        context.register_event_handler::<PlayerLeaveEvent, _>(
-            OnLeave,
-            EventPriority::Low,
-            false,
-        )?;
+        context.register_event_handler::<PlayerJoinEvent, _>(OnJoin, EventPriority::Normal, false);
+        context.register_event_handler::<PlayerLeaveEvent, _>(OnLeave, EventPriority::Low, false);
 
         let homes = state::player_count();
         let layout = config::Config::defaults().homes_layout().slots_per_page();
@@ -221,7 +227,7 @@ impl Plugin for PumpkinHome {
         Ok(())
     }
 
-    fn on_unload(&self, _context: Context) -> pumpkin_plugin_api::Result<()> {
+    async fn on_unload(&self, _context: Context) -> pumpkin_plugin_api_v0_2::Result<()> {
         // The homes are the only thing this plugin holds that the server is about
         // to shut down holding, and a clean unload is the last chance to write them.
         // Cancels nothing itself: the host drops the tasks with the instance.
@@ -297,6 +303,7 @@ fn register(context: &Context, node: &str, description: &str, default: Permissio
 /// This listens for `PlayerChatEvent`, not `AsyncPlayerChatEvent`. Both are in
 /// the WIT and both carry `player`, `message` and `cancelled`, so the handler body
 /// is identical for either - but the host only ever fires `PlayerChatEvent`
+/// (
 /// (`net/java/play/chat_message.rs:45` and `net/bedrock/play/chat_message.rs:19`).
 /// Nothing in the server constructs an `AsyncPlayerChatEvent`, so a handler
 /// registered for one is registered, never dispatched, and a rename silently does
@@ -304,7 +311,7 @@ fn register(context: &Context, node: &str, description: &str, default: Permissio
 struct OnChat;
 
 impl EventHandler<PlayerChatEvent> for OnChat {
-    fn handle(
+    async fn handle(
         &self,
         server: Server,
         mut event: EventData<PlayerChatEvent>,
@@ -323,7 +330,7 @@ impl EventHandler<PlayerChatEvent> for OnChat {
         event.cancelled = true;
 
         let config = screens::config();
-        if !permissions::can_manage(&server, &event.player, &pending.target) {
+        if !permissions::can_manage(&event.player, &pending.target).await {
             screens::say(&config, &event.player, "no-permission", &[]);
             return event;
         }
@@ -386,7 +393,7 @@ impl EventHandler<PlayerChatEvent> for OnChat {
             // the viewer closes the screen, so "no session" is exactly the
             // "screen is gone" case and is left alone rather than second-guessed.
             if let Some(session) = state::session(&viewer) {
-                screens::render_homes(&config, &event.player, &session);
+                screens::render_homes(&config, &event.player, &session).await;
             }
         }
         let _ = server;
@@ -403,7 +410,7 @@ const HOME_NAME_LIMIT: usize = 30;
 struct OnClick;
 
 impl EventHandler<InventoryClickEvent> for OnClick {
-    fn handle(
+    async fn handle(
         &self,
         server: Server,
         mut event: EventData<InventoryClickEvent>,
@@ -415,12 +422,12 @@ impl EventHandler<InventoryClickEvent> for OnClick {
         // Only our menus own these clicks. Leave every other inventory untouched.
         event.cancelled = true;
         let config = screens::config();
-        if !permissions::can_manage(&server, &event.player, &session.target) {
+        if !permissions::can_manage(&event.player, &session.target).await {
             state::discard_rename(&viewer);
             screens::say(&config, &event.player, "no-permission", &[]);
             return event;
         }
-        session.max_homes = permissions::max_homes(&server, &event.player, config.limit_scan_max());
+        session.max_homes = permissions::max_homes(&event.player, config.limit_scan_max()).await;
         state::set_session(session.clone());
 
         // `raw_slot` is the top inventory's own numbering, which is what the Java
@@ -437,7 +444,7 @@ impl EventHandler<InventoryClickEvent> for OnClick {
                 let grid = screens::grid(&config, &session);
                 if let Some(action) = homes_gui::click(&grid, slot, event.click_type) {
                     sounds::play(&config, &event.player, "ui-click");
-                    run(&server, &config, &session, &event.player, action);
+                    run(&server, &config, &session, &event.player, action).await;
                 }
             }
             state::Open::Confirm => {
@@ -448,7 +455,7 @@ impl EventHandler<InventoryClickEvent> for OnClick {
                 // and only `Accept` plays `ui-click`, which is what the Java's four
                 // branches did.
                 if let Some(button) = screens::confirm_click(slot) {
-                    run_confirm(&config, &session, &event.player, button);
+                    run_confirm(&config, &session, &event.player, button).await;
                 }
             }
         }
@@ -457,7 +464,7 @@ impl EventHandler<InventoryClickEvent> for OnClick {
 }
 
 /// Runs what a click on the homes screen asked for.
-fn run(
+async fn run(
     server: &Server,
     config: &crate::config::Config,
     session: &state::Session,
@@ -465,7 +472,7 @@ fn run(
     action: homes_gui::Action,
 ) {
     match action {
-        homes_gui::Action::Teleport { home } => teleport_to(server, config, player, &home),
+        homes_gui::Action::Teleport { home } => teleport_to(server, config, player, &home).await,
         homes_gui::Action::Rename { number } => {
             // Recorded **before** anything else, and cleared on the way out, so the
             // next chat message is the name. Paper closed the screen first and
@@ -489,11 +496,13 @@ fn run(
             // entry is recorded first, because that close clears the session and the
             // close handler would otherwise see nothing pending and treat this as the
             // player walking away.
-            screens::close_screen(player);
+            screens::close_screen(player).await;
             screens::rename_prompt(config, player);
         }
-        homes_gui::Action::Set { number } => set_home(server, config, session, player, number),
-        homes_gui::Action::Delete { home } => screens::show_confirm(player, session, &home),
+        homes_gui::Action::Set { number } => {
+            set_home(server, config, session, player, number).await
+        }
+        homes_gui::Action::Delete { home } => screens::show_confirm(player, session, &home).await,
         homes_gui::Action::PreviousPage | homes_gui::Action::NextPage => {
             let delta = if matches!(action, homes_gui::Action::PreviousPage) {
                 -1
@@ -501,13 +510,13 @@ fn run(
                 1
             };
             let next = screens::turned(session, delta);
-            screens::render_homes(config, player, &next);
+            screens::render_homes(config, player, &next).await;
         }
     }
 }
 
 /// Runs what a click on the confirmation screen asked for.
-fn run_confirm(
+async fn run_confirm(
     config: &crate::config::Config,
     session: &state::Session,
     player: &Player,
@@ -517,7 +526,7 @@ fn run_confirm(
         // Cancel and Back are the same thing: straight back to the homes screen.
         // Paper built a fresh `HomeGuiHandler` for both, so both land on page one.
         confirm_gui::Button::Cancel | confirm_gui::Button::Back => {
-            screens::render_homes(config, player, session);
+            screens::render_homes(config, player, session).await;
         }
         confirm_gui::Button::Accept => {
             sounds::play(config, player, "ui-click");
@@ -555,7 +564,7 @@ fn run_confirm(
             );
             // A delete always returned to page one, because a new handler was built.
             let next = screens::first_page(session);
-            screens::render_homes(config, player, &next);
+            screens::render_homes(config, player, &next).await;
         }
     }
 }
@@ -564,7 +573,7 @@ fn run_confirm(
 ///
 /// The same two early refusals as `/sethome`, in the same order: a blacklisted
 /// world, then the limit.
-fn set_home(
+async fn set_home(
     server: &Server,
     config: &crate::config::Config,
     session: &state::Session,
@@ -610,7 +619,7 @@ fn set_home(
         sounds::play(config, player, "error");
         return;
     }
-    screens::render_homes(config, player, session);
+    screens::render_homes(config, player, session).await;
     let _ = server;
 }
 
@@ -621,7 +630,7 @@ fn set_home(
 /// when Redis was *also* down, and otherwise NPE'd on the unset world of a home that
 /// belonged to another server. This one has no transport at all, so the unavailable
 /// message is the honest answer and the home stays visible in the screen.
-fn teleport_to(
+async fn teleport_to(
     server: &Server,
     config: &crate::config::Config,
     player: &Player,
@@ -652,7 +661,6 @@ fn teleport_to(
     // there is no second copy to hand over separately.
     teleport::start(
         config,
-        server,
         player,
         teleport::Destination {
             position: (home.x, home.y, home.z),
@@ -660,14 +668,15 @@ fn teleport_to(
             pitch: Some(home.pitch),
         },
         world,
-    );
+    )
+    .await;
 }
 
 /// A screen closing, which drops the viewer's session.
 struct OnClose;
 
 impl EventHandler<InventoryCloseEvent> for OnClose {
-    fn handle(
+    async fn handle(
         &self,
         _server: Server,
         event: EventData<InventoryCloseEvent>,
@@ -698,7 +707,7 @@ impl EventHandler<InventoryCloseEvent> for OnClose {
 struct OnDamage;
 
 impl EventHandler<EntityDamageByEntityEvent> for OnDamage {
-    fn handle(
+    async fn handle(
         &self,
         server: Server,
         event: EventData<EntityDamageByEntityEvent>,
@@ -735,7 +744,7 @@ fn player_by_entity_id(server: &Server, id: i32) -> Option<Player> {
 struct OnJoin;
 
 impl EventHandler<PlayerJoinEvent> for OnJoin {
-    fn handle(
+    async fn handle(
         &self,
         _server: Server,
         event: EventData<PlayerJoinEvent>,
@@ -751,7 +760,7 @@ impl EventHandler<PlayerJoinEvent> for OnJoin {
 struct OnLeave;
 
 impl EventHandler<PlayerLeaveEvent> for OnLeave {
-    fn handle(
+    async fn handle(
         &self,
         _server: Server,
         event: EventData<PlayerLeaveEvent>,
@@ -874,7 +883,7 @@ pub fn done() -> Result<i32, CommandError> {
 
 /// Sends a message and yields a failure count.
 pub fn soft_error(sender: &CommandSender, message: impl Into<String>) -> Result<i32, CommandError> {
-    sender.send_error(pumpkin_plugin_api::text::TextComponent::text(
+    sender.send_error(pumpkin_plugin_api_v0_2::text::TextComponent::text(
         &message.into(),
     ));
     Ok(1)
@@ -889,7 +898,7 @@ pub fn reply(
 ) {
     let rendered = messages::render(config, key, placeholders);
     sender.send_message(
-        pumpkin_plugin_api::text::TextComponent::from_legacy_string_with_code(
+        pumpkin_plugin_api_v0_2::text::TextComponent::from_legacy_string_with_code(
             &rendered,
             text::CODE,
         ),
@@ -902,7 +911,7 @@ pub fn reply(
 /// colliding with this one when the test harness links; dropping it entirely would
 /// fail the link outright with "failed to find export of function `init-plugin`".
 #[cfg(target_arch = "wasm32")]
-use pumpkin_plugin_api::register_plugin;
+use pumpkin_plugin_api_v0_2::register_plugin;
 
 #[cfg(target_arch = "wasm32")]
 register_plugin!(PumpkinHome);

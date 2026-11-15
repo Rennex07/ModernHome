@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use pumpkin_plugin_api::{Server, player::Player, world::World};
+use pumpkin_plugin_api_v0_2::{Server, player::Player, world::World};
 
 use crate::state::Session;
 
@@ -294,9 +294,8 @@ pub fn clear_destinations() {
 ///    is visible.
 /// 4. Otherwise a countdown is armed one tick out and then every twenty ticks, and
 ///    the timer sound plays once, immediately - before the first tick.
-pub fn start(
+pub async fn start(
     config: &crate::config::Config,
-    server: &Server,
     player: &Player,
     destination: Destination,
     world: World,
@@ -304,8 +303,8 @@ pub fn start(
     let viewer = crate::state::uuid_of(player);
     cancel(&viewer);
 
-    if crate::permissions::is_admin(server, player) {
-        land(player, destination, world);
+    if crate::permissions::is_admin(player).await {
+        land(player, destination, world).await;
         crate::screens::say(config, player, "teleport-success", &[]);
         crate::sounds::play(config, player, "teleported");
         return;
@@ -320,10 +319,13 @@ pub fn start(
 
     let task_viewer = viewer.clone();
     let live = Live {
-        task: pumpkin_plugin_api::scheduler::schedule_repeating_task(
+        task: pumpkin_plugin_api_v0_2::scheduler::schedule_repeating_task(
             crate::screens::COUNTDOWN_DELAY,
             crate::screens::COUNTDOWN_PERIOD,
-            move |server| countdown_tick(server, &task_viewer),
+            move |server| {
+                let viewer = task_viewer.clone();
+                async move { countdown_tick(server, &viewer).await }
+            },
         ),
         state: Countdown::new(seconds(config.teleport_time()), player.get_position()).in_world(
             player.get_world().get_name(),
@@ -368,17 +370,19 @@ pub fn take_destination(viewer: &str) -> Option<(Destination, World)> {
 /// passed in rather than fetched here because a destination whose world is not
 /// loaded has to be caught *before* this point - which is where
 /// `teleport-world-not-loaded` comes from.
-fn land(player: &Player, destination: Destination, world: World) {
-    player.teleport(
-        destination.position,
-        destination.yaw,
-        destination.pitch,
-        world,
-    );
+async fn land(player: &Player, destination: Destination, world: World) {
+    player
+        .teleport(
+            destination.position,
+            destination.yaw,
+            destination.pitch,
+            world,
+        )
+        .await;
 }
 
 /// Advances only the viewer whose repeating task fired.
-pub fn countdown_tick(server: Server, viewer: &str) {
+pub async fn countdown_tick(server: Server, viewer: &str) {
     let config = crate::screens::config();
     let combat_delay = config.combat_delay();
 
@@ -420,7 +424,7 @@ pub fn countdown_tick(server: Server, viewer: &str) {
             let Some((destination, world)) = destination else {
                 return;
             };
-            land(&player, destination, world);
+            land(&player, destination, world).await;
             crate::screens::say(&config, &player, "teleport-success", &[]);
             crate::screens::show(&config, &player, "teleport-success-actionbar", &[]);
             crate::sounds::play(&config, &player, "teleported");
@@ -444,7 +448,7 @@ pub fn countdown_tick(server: Server, viewer: &str) {
 /// lock must not be held across a host call.
 pub fn cancel(viewer: &str) {
     if let Some(task) = take(viewer) {
-        pumpkin_plugin_api::scheduler::cancel_task(task);
+        pumpkin_plugin_api_v0_2::scheduler::cancel_task(task);
     }
     recover(DESTINATIONS.lock()).remove(viewer);
 }

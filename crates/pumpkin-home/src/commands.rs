@@ -31,8 +31,8 @@
 //! admin - who has `Integer.MAX_VALUE` - that is two billion strings and an
 //! out-of-memory. See [`crate::lib`] for the bound this uses.
 
-use pumpkin_plugin_api::command_wit::Number;
-use pumpkin_plugin_api::{
+use pumpkin_plugin_api_v0_2::command_wit::Number;
+use pumpkin_plugin_api_v0_2::{
     Server,
     command::{
         Arg, CommandError, CommandSender, CommandSuggestion, CommandSuggestions, ConsumedArgs,
@@ -51,12 +51,12 @@ fn not_a_player(sender: &CommandSender) -> Result<i32, CommandError> {
     Ok(0)
 }
 
-fn is_admin(sender: &CommandSender, server: &Server) -> bool {
-    sender.has_permission(server, permissions::ADMIN)
+async fn is_admin(sender: &CommandSender) -> bool {
+    sender.has_permission(permissions::ADMIN.to_string()).await
 }
 
-fn guard(sender: &CommandSender, server: &Server) -> Result<bool, CommandError> {
-    if is_admin(sender, server) {
+async fn guard(sender: &CommandSender) -> Result<bool, CommandError> {
+    if is_admin(sender).await {
         return Ok(true);
     }
     reply(sender, &screens::config(), "no-permission", &[]);
@@ -77,10 +77,10 @@ fn say(
 pub struct OpenHomes;
 
 impl CommandHandler for OpenHomes {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
-        server: Server,
+        _server: Server,
         _args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
         let Some(player) = sender.as_player() else {
@@ -88,7 +88,7 @@ impl CommandHandler for OpenHomes {
         };
         let uuid = state::uuid_of(&player);
         let name = player.get_name();
-        screens::show_homes(&server, &player, uuid, name);
+        screens::show_homes(&player, uuid, name).await;
         done()
     }
 }
@@ -96,10 +96,10 @@ impl CommandHandler for OpenHomes {
 pub struct SetHome;
 
 impl CommandHandler for SetHome {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
-        server: Server,
+        _server: Server,
         _args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
         let Some(player) = sender.as_player() else {
@@ -117,7 +117,7 @@ impl CommandHandler for SetHome {
             return done();
         }
 
-        let max = permissions::max_homes(&server, &player, config.limit_scan_max());
+        let max = permissions::max_homes(&player, config.limit_scan_max()).await;
         let taken = state::with_store(|store: &mut Store| store.home_numbers(&viewer));
 
         if taken.len() >= max.max(1) as usize {
@@ -174,7 +174,7 @@ fn next_slot(taken: &[i32], limit: i32) -> Option<i32> {
 pub struct DeleteUsage;
 
 impl CommandHandler for DeleteUsage {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
         _server: Server,
@@ -193,7 +193,7 @@ impl CommandHandler for DeleteUsage {
 pub struct Delete;
 
 impl CommandHandler for Delete {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
         _server: Server,
@@ -264,7 +264,7 @@ fn number_of(args: &ConsumedArgs) -> Option<i32> {
 pub struct HomeNumbers;
 
 impl CommandSuggestionHandler for HomeNumbers {
-    fn suggest(
+    async fn suggest(
         &self,
         sender: CommandSender,
         _server: Server,
@@ -306,13 +306,13 @@ impl CommandSuggestionHandler for HomeNumbers {
 pub struct AdminHelp;
 
 impl CommandHandler for AdminHelp {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
-        server: Server,
+        _server: Server,
         _args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
-        if !guard(&sender, &server)? {
+        if !guard(&sender).await? {
             return done();
         }
         help(&sender)
@@ -322,13 +322,13 @@ impl CommandHandler for AdminHelp {
 pub struct Reload;
 
 impl CommandHandler for Reload {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
-        server: Server,
+        _server: Server,
         _args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
-        if !guard(&sender, &server)? {
+        if !guard(&sender).await? {
             return done();
         }
         let config = screens::config();
@@ -357,13 +357,13 @@ impl CommandHandler for Reload {
 pub struct Help;
 
 impl CommandHandler for Help {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
-        server: Server,
+        _server: Server,
         _args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
-        if !guard(&sender, &server)? {
+        if !guard(&sender).await? {
             return done();
         }
         help(&sender)
@@ -387,13 +387,13 @@ fn help(sender: &CommandSender) -> Result<i32, CommandError> {
 pub struct See;
 
 impl CommandHandler for See {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
         server: Server,
         args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
-        if !guard(&sender, &server)? {
+        if !guard(&sender).await? {
             return done();
         }
         let Some(player) = sender.as_player() else {
@@ -410,7 +410,7 @@ impl CommandHandler for See {
             return done();
         };
 
-        screens::show_homes(&server, &player, state::uuid_of(&target), target.get_name());
+        screens::show_homes(&player, state::uuid_of(&target), target.get_name()).await;
         done()
     }
 }
@@ -418,13 +418,13 @@ impl CommandHandler for See {
 pub struct Osee;
 
 impl CommandHandler for Osee {
-    fn handle(
+    async fn handle(
         &self,
         sender: CommandSender,
         server: Server,
         args: ConsumedArgs,
     ) -> Result<i32, CommandError> {
-        if !guard(&sender, &server)? {
+        if !guard(&sender).await? {
             return done();
         }
         let Some(player) = sender.as_player() else {
@@ -441,7 +441,7 @@ impl CommandHandler for Osee {
             return done();
         };
 
-        screens::show_homes(&server, &player, state::uuid_of(&target), target.get_name());
+        screens::show_homes(&player, state::uuid_of(&target), target.get_name()).await;
         done()
     }
 }

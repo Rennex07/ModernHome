@@ -25,13 +25,13 @@
 //! dropped when that screen closes. A viewer only ever has one open, so the
 //! question has one answer.
 
-use pumpkin_plugin_api::Screen;
-use pumpkin_plugin_api::common::ClickType;
-use pumpkin_plugin_api::gui::Gui;
-use pumpkin_plugin_api::java_packets::{CCloseContainer, ClientboundPacket};
-use pumpkin_plugin_api::player::Player;
-use pumpkin_plugin_api::text::TextComponent;
-use pumpkin_plugin_api::{ItemStack, Server};
+use pumpkin_plugin_api_v0_2::ItemStack;
+use pumpkin_plugin_api_v0_2::Screen;
+use pumpkin_plugin_api_v0_2::common::ClickType;
+use pumpkin_plugin_api_v0_2::gui::Gui;
+use pumpkin_plugin_api_v0_2::java_packets::{CCloseContainer, ClientboundPacket};
+use pumpkin_plugin_api_v0_2::player::Player;
+use pumpkin_plugin_api_v0_2::text::TextComponent;
 
 use crate::{
     config::Config,
@@ -92,16 +92,16 @@ pub fn homes_click(grid: &Grid, slot: u32, click: ClickType) -> Option<Action> {
 /// `target_name` is used for `%target%` and for the message a delete prints, which
 /// is what makes `/ahome osee <player>` work for somebody who has never joined and
 /// so has no handle.
-pub fn show_homes(server: &Server, viewer: &Player, target: String, target_name: String) {
+pub async fn show_homes(viewer: &Player, target: String, target_name: String) {
     let config = config();
     let session = Session::homes(
         state::uuid_of(viewer),
         viewer.get_name(),
         target,
         target_name,
-        permissions::max_homes(server, viewer, config.limit_scan_max()),
+        permissions::max_homes(viewer, config.limit_scan_max()).await,
     );
-    render_homes(&config, viewer, &session);
+    render_homes(&config, viewer, &session).await;
     sounds::play(&config, viewer, "ui-open");
 }
 
@@ -111,10 +111,10 @@ pub fn show_homes(server: &Server, viewer: &Player, target: String, target_name:
 /// call, so the viewer has to be marked before it and unmarked after - otherwise the
 /// close handler drops the session this very call is about to install, and the
 /// screen opens once and then ignores every click. See [`crate::state::begin_reopen`].
-fn open_for(viewer: &Player, gui: Gui) {
+async fn open_for(viewer: &Player, gui: Gui) {
     let viewer_uuid = state::uuid_of(viewer);
     state::begin_reopen(&viewer_uuid);
-    viewer.open_gui(gui);
+    viewer.open_gui(gui).await;
     state::end_reopen(&viewer_uuid);
 }
 
@@ -140,14 +140,15 @@ fn open_for(viewer: &Player, gui: Gui) {
 ///
 /// A Bedrock player has no `as-java`, so this does nothing for them and they close
 /// the screen themselves.
-pub fn close_screen(viewer: &Player) {
+pub async fn close_screen(viewer: &Player) {
     let Some(java) = viewer.as_java() else {
         return;
     };
     for sync_id in 0..=100 {
-        java.send_packet(&ClientboundPacket::CCloseContainer(CCloseContainer {
+        java.send_packet(ClientboundPacket::CCloseContainer(CCloseContainer {
             sync_id,
-        }));
+        }))
+        .await;
     }
 }
 
@@ -163,12 +164,12 @@ pub fn close_screen(viewer: &Player) {
 /// confirmation screen arrives here carrying `open: Confirm`, and installing that
 /// verbatim is a homes screen that renders and then ignores every click, because
 /// clicks are routed by `open`.
-pub fn render_homes(config: &Config, viewer: &Player, session: &Session) {
+pub async fn render_homes(config: &Config, viewer: &Player, session: &Session) {
     // The session goes in first: `open_for` re-enters this plugin to fire the
     // close event, and the close handler skips a marked viewer rather than
     // clearing this one.
     state::set_session(session.as_homes());
-    open_for(viewer, build_homes(config, session));
+    open_for(viewer, build_homes(config, session).await).await;
 }
 
 /// The homes screen a page change produces.
@@ -196,7 +197,7 @@ pub fn first_page(session: &Session) -> Session {
 }
 
 /// Builds the homes screen's `Gui`.
-fn build_homes(config: &Config, session: &Session) -> Gui {
+async fn build_homes(config: &Config, session: &Session) -> Gui {
     let layout = config.homes_layout();
     let homes = homes_of(session);
     let grid = homes_gui::plan(config, &homes, session, layout);
@@ -246,7 +247,7 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
             Slot::Locked => ("no-perm-bed", "no-perm"),
         };
 
-        let bed_item = item(config.homes_gui(), bed_key, &placeholders, true);
+        let bed_item = item(config.homes_gui(), bed_key, &placeholders, true).await;
 
         // The one thing an item carries that no config file describes: a
         // cross-server home's bed gains a line naming the server its home is on.
@@ -255,18 +256,24 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
         if let Slot::Existing(home) = cell
             && !home.is_local(&server_id)
         {
-            bed_item.add_lore(items::component(&format!(
-                "&8Server: &7{}",
-                home.server_or_empty()
-            )));
+            bed_item
+                .add_lore(items::component(&format!(
+                    "&8Server: &7{}",
+                    home.server_or_empty()
+                )))
+                .await;
         }
-        gui.set_item(bed, bed_item);
+        gui.set_item(bed, bed_item).await;
 
         // A bed on the bottom row of the layout has no row below it, so its home
         // has no delete button. The `if let` is that guard, which the Java
         // `if (dyeSlot >= 0)` also was.
         if let Some(dye) = grid.dye_slots.get(index).copied().flatten() {
-            gui.set_item(dye, item(config.homes_gui(), dye_key, &placeholders, true));
+            gui.set_item(
+                dye,
+                item(config.homes_gui(), dye_key, &placeholders, true).await,
+            )
+            .await;
         }
     }
 
@@ -274,11 +281,16 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
     if let Some(slot) = grid.previous {
         gui.set_item(
             slot,
-            item(config.homes_gui(), "previous-page", &global, true),
-        );
+            item(config.homes_gui(), "previous-page", &global, true).await,
+        )
+        .await;
     }
     if let Some(slot) = grid.next {
-        gui.set_item(slot, item(config.homes_gui(), "next-page", &global, true));
+        gui.set_item(
+            slot,
+            item(config.homes_gui(), "next-page", &global, true).await,
+        )
+        .await;
     }
 
     // Fillers last, over everything, with no button behind them. A filler that
@@ -287,7 +299,8 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
     // fillers were placed over it.
     for filler in items::fillers(config.homes_gui()) {
         if (filler.slot as usize) < layout.rows * 9 {
-            gui.set_item(filler.slot, filler_item(&filler, &global));
+            gui.set_item(filler.slot, filler_item(&filler, &global).await)
+                .await;
         }
     }
 
@@ -295,15 +308,15 @@ fn build_homes(config: &Config, session: &Session) -> Gui {
 }
 
 /// Opens the delete-confirmation screen for `home`.
-pub fn show_confirm(viewer: &Player, session: &Session, home: &Home) {
+pub async fn show_confirm(viewer: &Player, session: &Session, home: &Home) {
     let config = config();
     let confirm = Session::confirm(session, home.clone());
     state::set_session(confirm);
-    open_for(viewer, build_confirm(&config, session, home));
+    open_for(viewer, build_confirm(&config, session, home).await).await;
 }
 
 /// Builds the confirmation screen's `Gui`.
-fn build_confirm(config: &Config, session: &Session, home: &Home) -> Gui {
+async fn build_confirm(config: &Config, session: &Session, home: &Home) -> Gui {
     let layout = config.confirm_layout();
     let placeholders = confirm_gui::placeholders(&session.viewer_name, &session.target_name, home);
 
@@ -315,22 +328,23 @@ fn build_confirm(config: &Config, session: &Session, home: &Home) -> Gui {
         ),
     );
     // Left at the default, for the reason given in `build_homes`.
-    gui.set_allow_grab_items(false);
-    gui.set_allow_put_items(false);
+    gui.set_allow_grab_items(false).await;
+    gui.set_allow_put_items(false).await;
 
     for cell in confirm_gui::plan(config.confirm_gui(), layout).cells {
         let stack = match &cell.item {
             confirm_gui::Item::Configured(key) => {
-                item(config.confirm_gui(), key, &placeholders, false)
+                item(config.confirm_gui(), key, &placeholders, false).await
             }
-            confirm_gui::Item::HomeDisplay => summary(home),
+            confirm_gui::Item::HomeDisplay => summary(home).await,
         };
-        gui.set_item(cell.slot, stack);
+        gui.set_item(cell.slot, stack).await;
     }
 
     for filler in items::fillers(config.confirm_gui()) {
         if (filler.slot as usize) < layout.rows * 9 {
-            gui.set_item(filler.slot, filler_item(&filler, &placeholders));
+            gui.set_item(filler.slot, filler_item(&filler, &placeholders).await)
+                .await;
         }
     }
 
@@ -357,13 +371,17 @@ pub fn confirm_click(slot: u32) -> Option<confirm_gui::Button> {
 /// A sheet of paper named `"&9Home <number> <name>"` with the world and the
 /// coordinates below it. An unnamed home's name ends in a space, because the Java
 /// string concatenation put an empty custom name between two spaces.
-fn summary(home: &Home) -> ItemStack {
-    let stack = items::of("PAPER");
-    stack.set_custom_name(Some(items::component(&confirm_gui::summary_name(home))));
+async fn summary(home: &Home) -> ItemStack {
+    let stack = items::of("PAPER").await;
+    stack
+        .set_custom_name(Some(items::component(&confirm_gui::summary_name(home))))
+        .await;
     let [world, coords] = confirm_gui::summary_lore(home);
     let world = TextComponent::from_legacy_string_with_code(&world, text::CODE);
     let coords = TextComponent::from_legacy_string_with_code(&coords, text::CODE);
-    stack.set_lore(vec![items::plain(world), items::plain(coords)]);
+    stack
+        .set_lore(vec![items::plain(world), items::plain(coords)])
+        .await;
     stack
 }
 
@@ -377,22 +395,20 @@ fn summary(home: &Home) -> ItemStack {
 /// `isEmpty()`: the homes screen's own items set the display name whenever the key
 /// exists, while the confirmation screen's and the fillers set it only when it is
 /// non-empty.
-fn item(
+async fn item(
     root: &serde_norway::Value,
     key: &str,
     placeholders: &[(&'static str, String)],
     always_name: bool,
 ) -> ItemStack {
-    root.get("items")
-        .and_then(|section| section.get(key))
-        .map_or_else(
-            || items::of("STONE"),
-            |section| items::build_item(section, placeholders, always_name),
-        )
+    match root.get("items").and_then(|section| section.get(key)) {
+        Some(section) => items::build_item(section, placeholders, always_name).await,
+        None => items::of("STONE").await,
+    }
 }
 
 /// Builds a filler, which is a slot and a shape rather than a configured section.
-fn filler_item(filler: &items::Filler, placeholders: &[(&'static str, String)]) -> ItemStack {
+async fn filler_item(filler: &items::Filler, placeholders: &[(&'static str, String)]) -> ItemStack {
     use serde_norway::{Mapping, Value};
 
     let mut section = Mapping::new();
@@ -409,7 +425,7 @@ fn filler_item(filler: &items::Filler, placeholders: &[(&'static str, String)]) 
         Value::Sequence(filler.lore.iter().cloned().map(Value::String).collect()),
     );
     // Never `always_name`: a filler with an empty `name:` shows nothing.
-    items::build_item(&Value::Mapping(section), placeholders, false)
+    items::build_item(&Value::Mapping(section), placeholders, false).await
 }
 
 /// A message to the viewer, if chat is allowed.

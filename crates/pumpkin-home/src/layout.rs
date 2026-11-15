@@ -17,7 +17,7 @@
 //! ordinary, and the previous/next buttons are placed by absolute slot from
 //! `items.previous-page-slot` and `items.next-page-slot`, not by walking `#`.
 
-use pumpkin_plugin_api::Screen;
+use pumpkin_plugin_api_v0_2::Screen;
 
 /// The row count a chest screen of that many rows is.
 ///

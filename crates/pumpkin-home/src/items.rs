@@ -24,14 +24,19 @@
 //! behaviours are reproduced rather than unified, because an admin who wrote
 //! `name: ""` on a home item and expected a blank name is relying on the first.
 
-use pumpkin_plugin_api::ItemStack;
-use pumpkin_plugin_api::item::{Item, ItemStackExt};
-use pumpkin_plugin_api::text::TextComponent;
+use pumpkin_plugin_api_v0_2::ItemStack;
+use pumpkin_plugin_api_v0_2::item::ItemStackExt;
+use pumpkin_plugin_api_v0_2::text::TextComponent;
 
 use crate::text;
 
 /// The fallback material, the Java `Material.STONE`.
-const FALLBACK: Item = Item::Stone;
+///
+/// The v0.2 host answers an unknown registry key with air rather than with an
+/// error, so the fallback is applied by the plugin: an item that names
+/// something the server does not have becomes a stone, which is what Paper's
+/// `Material.matchMaterial` returning `null` became.
+const FALLBACK_KEY: &str = "minecraft:stone";
 
 /// The registry key a configured material name maps to.
 ///
@@ -60,29 +65,38 @@ pub fn material_key(name: &str) -> String {
     }
 }
 
-/// Maps a configured material name to its item.
+/// Maps a configured material name to the registry key of its item.
 ///
-/// Returns [`FALLBACK`] when the name is not a known item, which is what
-/// `Material.matchMaterial` returning `null` became.
+/// The name is the one the configuration gives; the key is what the item is
+/// created from. An empty name maps to [`FALLBACK_KEY`], which is the `null`
+/// `Material.matchMaterial("")` returned, and `STONE` is what Paper substituted
+/// for a name that did not resolve.
 ///
-/// This one reaches the host - `ItemStack` and `Item` are both wit imports, and off
-/// `wasm32` they are `unreachable!()` stubs - so it is not exercised by the tests
-/// here. [`material_key`], which is the whole of the decision, is.
-#[must_use]
-pub fn material(name: &str) -> Item {
+/// This one reaches the host - `ItemStack` is a wit import, and off `wasm32` it
+/// is an `unreachable!()` stub - so it is not exercised by the tests here.
+/// [`material_key`], which is the whole of the decision, is.
+pub async fn material(name: &str) -> ItemStack {
     let key = material_key(name);
-    if key.is_empty() {
-        return FALLBACK;
+    let key = if key.is_empty() {
+        FALLBACK_KEY.to_string()
+    } else {
+        key
+    };
+    let stack = ItemStack::of(key.clone(), 1);
+    if stack.get_registry_key().await == "minecraft:air" && key != FALLBACK_KEY {
+        // The host does not have that item, and answered with air. Paper
+        // answered with a stone, so the stone is what goes on the screen.
+        return ItemStack::of(FALLBACK_KEY, 1);
     }
-    Item::from_registry_key(&key).unwrap_or(FALLBACK)
+    stack
 }
 
 /// A single item of count one, from a Bukkit material name.
 ///
 /// The one-item case, which is every item this plugin puts on a screen: the Java
 /// `new ItemStack(material)` had no other constructor and so never set an amount.
-pub fn of(name: &str) -> ItemStack {
-    ItemStack::of(material(name), 1)
+pub async fn of(name: &str) -> ItemStack {
+    material(name).await
 }
 
 /// Turns italic off on an item's text.
@@ -127,14 +141,12 @@ pub fn component(rendered: &str) -> TextComponent {
 
     let mut root = TextComponent::text("");
     for (is_code, piece) in runs {
-        root = if is_code {
-            root.add_child(TextComponent::from_legacy_string_with_code(
-                &piece,
-                text::CODE,
-            ))
+        if is_code {
+            let child = TextComponent::from_legacy_string_with_code(&piece, text::CODE);
+            root = root.add_child(child);
         } else {
-            root.add_text(&piece)
-        };
+            root = root.add_text(&piece);
+        }
     }
     plain(root)
 }
@@ -144,16 +156,16 @@ pub fn component(rendered: &str) -> TextComponent {
 /// `set_name_when_empty` chooses between the two Java rules described in the
 /// module header: `true` for the homes screen's own items, `false` for the
 /// confirm screen's and for fillers.
-pub fn build_item(
+pub async fn build_item(
     item: &serde_norway::Value,
     placeholders: &[(&str, String)],
     always_name: bool,
 ) -> ItemStack {
-    let material = item
-        .get("material")
-        .and_then(serde_norway::Value::as_str)
-        .map_or(FALLBACK, material);
-    let stack = ItemStack::of(material, 1);
+    let name = item.get("material").and_then(serde_norway::Value::as_str);
+    let stack = match name {
+        Some(name) => material(name).await,
+        None => ItemStack::of(FALLBACK_KEY, 1),
+    };
 
     let name = item.get("name").and_then(serde_norway::Value::as_str);
     if let Some(name) = name {
@@ -162,7 +174,9 @@ pub fn build_item(
             // Paper's `ColorUtils.color(applyPlaceholders(...))` at
             // `HomesGuiConfig.java:168`: placeholders first, colour second, so a home
             // named `&#FF0000` colours its own bed.
-            stack.set_custom_name(Some(component(&text::decorate(&rendered))));
+            stack
+                .set_custom_name(Some(component(&text::decorate(&rendered))))
+                .await;
         }
     }
 
@@ -182,15 +196,17 @@ pub fn build_item(
         // One host call carries the whole list, so it is built and moved rather
         // than appended a line at a time. `set_lore` takes the list by value -
         // `list<text-component>` in the WIT, which wit-bindgen owns.
-        stack.set_lore(
-            lore.into_iter()
-                .map(|line| {
-                    // Same order as the name above, and for the same reason: Paper
-                    // colourised the lore after substituting into it too.
-                    component(&text::decorate(&line))
-                })
-                .collect(),
-        );
+        stack
+            .set_lore(
+                lore.into_iter()
+                    .map(|line| {
+                        // Same order as the name above, and for the same reason: Paper
+                        // colourised the lore after substituting into it too.
+                        component(&text::decorate(&line))
+                    })
+                    .collect(),
+            )
+            .await;
     }
 
     stack
@@ -341,8 +357,7 @@ mod tests {
         // substituted for anything that did not resolve.
         assert_eq!(material_key(""), "");
         assert_eq!(material_key("   "), "");
-        assert_eq!(material(""), FALLBACK);
-        assert_eq!(material("   "), FALLBACK);
+        assert_eq!(FALLBACK_KEY, "minecraft:stone");
     }
 
     #[test]
@@ -372,17 +387,13 @@ mod tests {
         assert!(fillers(&value("title: x\n")).is_empty());
     }
 
-    /// Deliberately absent: a test that builds an `ItemStack`.
-    ///
-    /// `ItemStack::of` and every setter on it are wit imports, and off `wasm32`
-    /// they are `unreachable!()` stubs, so such a test aborts the whole harness
-    /// rather than failing. What those tests would have checked - that the shipped
-    /// templates render to the right names and lore - is verified on the server
-    /// instead: open `/home` and read the items. [`material_key`] above is the part
-    /// of this module that can be wrong without a server noticing, and it is tested
-    /// against the real registry keys.
-    #[test]
-    fn the_fallback_is_stone() {
-        assert_eq!(FALLBACK, Item::Stone);
-    }
+    // Deliberately absent: a test that builds an `ItemStack`.
+    //
+    // `ItemStack::of` and every setter on it are wit imports, and off `wasm32`
+    // they are `unreachable!()` stubs, so such a test aborts the whole harness
+    // rather than failing. What those tests would have checked - that the shipped
+    // templates render to the right names and lore - is verified on the server
+    // instead: open `/home` and read the items. [`material_key`] above is the part
+    // of this module that can be wrong without a server noticing, and it is tested
+    // against the real registry keys.
 }
