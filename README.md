@@ -8,10 +8,14 @@ The plugin API is taken from the sibling `Pumpkin-release` checkout. Use the sam
 
 ```sh
 cargo test
-cargo build --release --target wasm32-wasip2
+cargo build --locked --offline --release --target wasm32-wasip3
 ```
 
-Install `target/wasm32-wasip2/release/pumpkin_home.wasm` in the server's plugin directory.
+Install `target/wasm32-wasip3/release/pumpkin_home.wasm` in the server's plugin directory.
+
+Use the Rust 1.100.0 toolchain pinned in `rust-toolchain.toml` and fetch dependencies
+with `cargo fetch --locked` before an offline build. The server must support WASIp3
+as well as the pinned plugin WIT.
 
 When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome` and command-root grants to `ModernHome:home` or `ModernHome:ahome`.
 
