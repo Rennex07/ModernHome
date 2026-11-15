@@ -35,9 +35,17 @@ rusqlite = { version = "0.42", default-features = false, features = [
     "bundled",
     "wasm32-wasi-vfs",
 ], optional = true }
+# The MySQL and MariaDB backend. Both speak the same protocol, so both use
+# these two, which are the SHA1 and SHA256 hashes the authentication uses.
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 [features]
 # The SQLite backend. Without it the plugin keeps the JSON backend only, and a
 # `database.yml` that asks for SQLite is reported rather than silently ignored.
 default = []
 sqlite = ["dep:rusqlite"]
+# The MySQL and MariaDB backend. It needs the host to grant the plugin network
+# access: `network.tcp.connect` for the server itself and `network.dns` for a
+# host that is not an address.
+mysql = ["dep:sha1", "dep:sha2"]

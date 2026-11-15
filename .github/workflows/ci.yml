@@ -35,14 +35,26 @@ jobs:
   # script finds it through `cc`.
   sqlite:
     runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.8.3
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "1"
+          MARIADB_DATABASE: modernhome_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
         with:
           path: plugin
       - name: Install the wasi-sdk
         run: |
-          curl -sSL -o wasi-sdk.tar.gz \
+          curl --fail --location -o wasi-sdk.tar.gz \
             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+          echo "b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4  wasi-sdk.tar.gz" | sha256sum --check
           tar -xzf wasi-sdk.tar.gz
           echo "WASI_SDK=$PWD/wasi-sdk-34.0-x86_64-linux" >> "$GITHUB_ENV"
       - run: rustup show
@@ -52,13 +64,24 @@ jobs:
           workspaces: plugin
       - run: cargo fetch --locked
         working-directory: plugin
-      - name: Test the SQLite backend
-        run: cargo test --locked --offline --features sqlite
+      - run: cargo clippy --locked --offline --all-targets --all-features -- -D warnings
+        working-directory: plugin
+      - name: Test storage backends
+        run: cargo test --locked --offline --all-features
         working-directory: plugin
         env:
           CC_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/wasm32-wasip3-clang
           AR_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/llvm-ar
-      - run: cargo build --locked --offline --release --target wasm32-wasip3 --features sqlite
+      - name: Test MariaDB persistence and rollback
+        run: cargo test --locked --offline --all-features real_database_round_trip_and_rollback -- --ignored
+        working-directory: plugin
+        env:
+          MODERNHOME_TEST_MYSQL_HOST: 127.0.0.1
+          MODERNHOME_TEST_MYSQL_PORT: "3306"
+          MODERNHOME_TEST_MYSQL_USER: root
+          MODERNHOME_TEST_MYSQL_PASSWORD: ""
+          MODERNHOME_TEST_MYSQL_DATABASE: modernhome_test
+      - run: cargo build --locked --offline --release --target wasm32-wasip3 --all-features
         working-directory: plugin
         env:
           CC_wasm32_wasip3: ${{ env.WASI_SDK }}/bin/wasm32-wasip3-clang

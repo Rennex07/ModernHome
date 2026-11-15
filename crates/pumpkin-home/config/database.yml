@@ -1,23 +1,37 @@
 # Where the plugin's homes are kept, relative to its data folder.
 #
-# Two backends are available:
+# Storage choices (SQL backends require their Cargo features):
 #
-#   json    - one JSON file, replaced atomically after every change. This is
-#             the default. The row shape is the same one the Paper plugin's
-#             `player_homes` table had, so a store written by this plugin is
-#             readable by eye.
+#   json      - one JSON file, replaced atomically after every change. This is
+#               the default. The row shape is the same one the Paper plugin's
+#               `player_homes` table had, so a store written by this plugin is
+#               readable by eye.
 #
-#   sqlite  - a SQLite database, one row per home, keyed by the player's uuid
-#             and the slot the home occupies. A save rewrites only the players
-#             whose homes changed, in one transaction.
+#   sqlite    - a SQLite database, one row per home, keyed by the player's uuid
+#               and the slot the home occupies. A save rewrites only the players
+#               whose homes changed, in one transaction.
 #
-# The two backends are two different files: switching between them does not
-# move the homes, and the file that is left behind is left exactly as it was.
+#   mysql     - experimental MySQL, one row per home, the same shape as the SQLite
+#               backend. The homes are read when the plugin loads and written
+#               when they change.
 #
-# A remote MySQL or MariaDB server is not offered. There is no MySQL client
-# that can be linked into a WebAssembly component for the host this plugin runs
-# on, and a plugin that cannot reach the database is worse than one that keeps
-# a file.
+#   mariadb   - the same thing as `mysql`. MariaDB speaks the same protocol, so
+#               it is the same backend under a second name.
+#
+# The backends are different files and different servers: switching between them
+# does not move the homes, and what is left behind is left exactly as it was.
+#
+# The MySQL and MariaDB backends need the plugin to be allowed to reach the
+# server: the host asks for the `network.tcp.connect` permission, and for
+# `network.dns` when the host is a name rather than an address.
+#
+# SQL writes use transactions. MySQL/MariaDB transport errors disable writes
+# until restart; a disconnected COMMIT may have an unknown outcome.
+# Native TLS and full caching_sha2_password authentication are not implemented.
+# Use a trusted network or an authenticated TLS tunnel. MariaDB 11.8.3 has been
+# tested; MySQL server compatibility is not yet verified.
+# Restart after changing storage settings. Existing homes are not migrated.
+# Use one plugin instance per database; the WASI SQLite VFS has no file locking.
 storage: json
 
 # The JSON backend's file.
@@ -27,3 +41,14 @@ store:
 # The SQLite backend's database file.
 sqlite:
   file: homes.db
+
+# The MySQL and MariaDB backend's server and table.
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: ""
+  database: modernhome
+  # The table is created if it is not there. Only letters, digits and
+  # underscores are allowed in the name.
+  table: modernhome_homes

@@ -81,6 +81,9 @@ enum Backend {
     /// A SQLite database, one row per home.
     #[cfg(feature = "sqlite")]
     Sqlite(Sqlite),
+    /// A MySQL or MariaDB database, one row per home.
+    #[cfg(feature = "mysql")]
+    MySql(crate::mysql_store::MySql),
     /// The backend could not be opened, so nothing is read and nothing is
     /// written.
     Broken {
@@ -131,6 +134,42 @@ impl Store {
         }
     }
 
+    /// Binds a store to a MySQL or MariaDB database without reading it.
+    ///
+    /// A database that cannot be reached leaves the store broken: the homes are
+    /// not read and nothing is written, rather than the plugin quietly falling
+    /// back to another file and splitting the homes across two of them.
+    #[must_use]
+    pub fn mysql(
+        host: &str,
+        port: u16,
+        user: &str,
+        password: &str,
+        database: &str,
+        table: &str,
+    ) -> Self {
+        let path = PathBuf::from(format!("{host}:{port}/{database}.{table}"));
+        #[cfg(feature = "mysql")]
+        {
+            match crate::mysql_store::MySql::open(host, port, user, password, database, table) {
+                Ok(mysql) => Self {
+                    players: BTreeMap::new(),
+                    dirty: false,
+                    problem: false,
+                    touched: BTreeSet::new(),
+                    path,
+                    backend: Backend::MySql(mysql),
+                },
+                Err(error) => Self::broken(path, error.to_string()),
+            }
+        }
+        #[cfg(not(feature = "mysql"))]
+        {
+            let _ = (user, password);
+            Self::broken(path, "this build has no MySQL support".to_string())
+        }
+    }
+
     /// A store that reads nothing and writes nothing.
     fn broken(path: PathBuf, reason: String) -> Self {
         error!(
@@ -155,6 +194,8 @@ impl Store {
             Backend::Json => read_json(&self.path),
             #[cfg(feature = "sqlite")]
             Backend::Sqlite(sqlite) => sqlite.read_all().map_err(|error| error.to_string()),
+            #[cfg(feature = "mysql")]
+            Backend::MySql(mysql) => mysql.read_all().map_err(|error| error.to_string()),
             Backend::Broken { reason } => Err(reason.clone()),
         };
 
@@ -190,6 +231,10 @@ impl Store {
             Backend::Sqlite(sqlite) => sqlite
                 .write(&self.touched, &self.players)
                 .map_err(|error| error.to_string()),
+            #[cfg(feature = "mysql")]
+            Backend::MySql(mysql) => mysql
+                .write(&self.touched, &self.players)
+                .map_err(|error| error.to_string()),
             Backend::Broken { reason } => Err(reason.clone()),
         };
 
@@ -199,7 +244,15 @@ impl Store {
                 self.touched.clear();
                 Ok(())
             }
-            Err(reason) => Err(io::Error::other(reason)),
+            Err(reason) => {
+                // A transport failure during COMMIT has an unknown outcome.
+                // Do not accept more changes against a possibly stale snapshot.
+                #[cfg(feature = "mysql")]
+                if matches!(self.backend, Backend::MySql(_)) {
+                    self.problem = true;
+                }
+                Err(io::Error::other(reason))
+            }
         }
     }
 

@@ -44,9 +44,25 @@ export AR_wasm32_wasip3="$WASI_SDK/bin/llvm-ar"
 cargo build --locked --offline --release --target wasm32-wasip3 --features sqlite
 ```
 
-Without the feature the plugin keeps the JSON backend only, and a `database.yml`
-that asks for SQLite is reported rather than silently ignored. The released
-artifact is built with the feature, so an installed plugin has both backends.
+Without this feature, selecting SQLite fails to load rather than falling back to JSON.
+Use `--features sqlite,mysql` to build all storage backends.
+
+### MySQL and MariaDB (experimental)
+
+Build with `--features mysql` and set `storage: mysql` or `storage: mariadb`
+in `database.yml`. Both names use the `mysql` configuration section.
+Create the database and a dedicated account first; the plugin creates its table.
+The host must grant `network.tcp.connect` and `network.dns`.
+
+The client supports `mysql_native_password` and the cached fast path of
+`caching_sha2_password`. Full SHA2 authentication, native TLS and other
+authentication plugins are not implemented. Queries and results are unencrypted;
+use a trusted network or an authenticated TLS tunnel. A server requiring
+unsupported authentication is refused, not downgraded.
+
+MariaDB 11.8.3 has been exercised through WASIp3 in Wasmtime 50. MySQL itself
+and database access inside a Pumpkin callback remain unverified. This backend
+is not ready for a production release.
 
 When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinhome` to `plugins/data/ModernHome`. Update any plugin permission override to `ModernHome`.
 
@@ -63,13 +79,33 @@ When upgrading from PumpkinHome, stop the server and copy `plugins/data/pumpkinh
 
 ## Differences and testing
 
-Homes are kept in a JSON file by default, or in a SQLite database when `database.yml` says `storage: sqlite`. A remote MySQL or MariaDB server is not offered: there is no MySQL client that can be linked into a WebAssembly component for the host this plugin runs on. Redis cross-server transport, EssentialsX import and offline player lookup are not available. GUI behavior depends on Pumpkin's inventory API; the close-screen workaround is Java-client-specific. Existing GUI and message configurations may be reused, but defaults have been restyled.
+Homes use JSON by default, with optional SQLite and experimental MySQL/MariaDB
+backends. Redis cross-server transport, EssentialsX import and offline player
+lookup are not available. GUI behavior depends on Pumpkin's inventory API;
+the close-screen workaround is Java-client-specific.
 
 New homes record both the world folder and dimension. Older home records are preserved; if their world name matches several loaded dimensions, teleporting is refused rather than guessing. Set those homes again in the correct dimension, or restore the correct dimension identifier from a trusted backup.
 
-Home changes are saved through a temporary file and atomic replacement. If saving fails, the change is rolled back in memory and the player receives a failure message. Keep regular backups of `homes.json`.
+JSON saves use atomic file replacement; SQL saves use transactions. Failed
+changes are rolled back in memory and reported to the player. A MySQL/MariaDB
+save error disables further writes until restart because a disconnected COMMIT
+may have an unknown outcome. Keep regular backups.
 
 The JSON and SQLite backends are two different files. Switching between them does not move the homes, and the file that is left behind is left exactly as it was.
+
+Storage settings take effect after a restart. Each backend is intended for one
+plugin instance; the in-memory cache is not refreshed from other servers.
+The WASI SQLite VFS does not provide database file locking.
+
+### Database regression test
+
+The integration test requires a disposable database and an account that can
+create tables and triggers. Set `MODERNHOME_TEST_MYSQL_HOST`, `PORT`, `USER`,
+`PASSWORD`, and `DATABASE` (all with the same prefix), then run:
+
+```sh
+cargo test --features mysql real_database_round_trip_and_rollback -- --ignored
+```
 
 The pure logic is unit-tested; GUI, teleport and event handling still require an in-game check. On a scratch server, test setting, renaming and deleting a home, teleport countdown and cancellation, admin permissions and a restart. Check the screens with a real client.
 

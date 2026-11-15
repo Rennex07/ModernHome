@@ -2,9 +2,9 @@
 //!
 //! This port provides home-management commands and two configurable inventory
 //! screens. Homes are stored as JSON, or in a SQLite database when
-//! `database.yml` asks for it; a remote MySQL server, Redis transport, offline
-//! player lookup and EssentialsX import are not implemented. The host has
-//! permission-controlled networking, but this plugin does not use it.
+//! `database.yml` asks for it. Experimental MySQL/MariaDB storage uses the
+//! host's permission-controlled networking. Redis transport, offline player
+//! lookup and EssentialsX import are not implemented.
 //!
 //! Home destinations include both the world folder and dimension. Legacy records
 //! without a dimension are refused when their destination is ambiguous.
@@ -68,6 +68,10 @@ pub mod homes_gui;
 pub mod items;
 pub mod layout;
 pub mod messages;
+#[cfg(feature = "mysql")]
+pub mod mysql;
+#[cfg(feature = "mysql")]
+pub mod mysql_store;
 pub mod permissions;
 pub mod screens;
 pub mod sounds;
@@ -120,6 +124,12 @@ pub fn reload() -> Option<(bool, Vec<String>)> {
     if !problems.is_empty() {
         return Some((false, problems));
     }
+    if loaded.value.storage() == config::Storage::Invalid {
+        return Some((
+            false,
+            vec!["unsupported database.yml storage backend".into()],
+        ));
+    }
     state::install(loaded.value);
     Some((true, Vec::new()))
 }
@@ -155,6 +165,17 @@ impl Plugin for PumpkinHome {
                 // the plugin when it cannot ask.
                 pumpkin_plugin_api_v0_2::permissions::FS_READ_DATA.to_string(),
                 pumpkin_plugin_api_v0_2::permissions::FS_WRITE_DATA.to_string(),
+                // The MySQL and MariaDB backend needs to reach the database. The
+                // connection is to a TCP port, and the host that is named by a
+                // name rather than by an address needs a lookup as well.
+                //
+                // These are only asked for in a build that has the backend, so
+                // a plugin that keeps its homes in a file does not ask for the
+                // network at all.
+                #[cfg(feature = "mysql")]
+                pumpkin_plugin_api_v0_2::permissions::NETWORK_TCP_CONNECT.to_string(),
+                #[cfg(feature = "mysql")]
+                pumpkin_plugin_api_v0_2::permissions::NETWORK_DNS.to_string(),
             ],
         }
     }
@@ -181,9 +202,23 @@ impl Plugin for PumpkinHome {
                 let path = std::path::Path::new(&folder).join(loaded.value.sqlite_file());
                 store::Store::sqlite(path)
             }
+            config::Storage::MySql => store::Store::mysql(
+                &loaded.value.mysql_host(),
+                loaded.value.mysql_port()?,
+                &loaded.value.mysql_user(),
+                &loaded.value.mysql_password(),
+                &loaded.value.mysql_database(),
+                &loaded.value.mysql_table(),
+            ),
+            config::Storage::Invalid => {
+                return Err("unsupported database.yml storage backend".into());
+            }
         };
         state::open_store(store);
         state::with_store(store::Store::load);
+        if state::with_store(|store| store.has_problem()) {
+            return Err("home storage could not be loaded; see the preceding storage error".into());
+        }
         state::install(loaded.value);
 
         let registered = register_nodes(&context);

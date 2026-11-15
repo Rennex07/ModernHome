@@ -113,6 +113,13 @@ pub enum Storage {
     Json,
     /// A SQLite database, one row per home.
     Sqlite,
+    /// A MySQL or MariaDB database, one row per home.
+    ///
+    /// The two are the same backend: they speak the same protocol, and the
+    /// only difference an admin sees is which name they write in `storage`.
+    MySql,
+    /// An explicitly configured backend is not supported.
+    Invalid,
 }
 
 /// What [`load`] could and could not read.
@@ -239,8 +246,7 @@ impl Config {
 
     /// `database.yml`'s `storage`, defaulting to the JSON backend.
     ///
-    /// An unknown name is reported and the JSON backend is used, because a
-    /// typo must not leave the plugin without a store.
+    /// Unknown names are refused to avoid writing homes into the wrong backend.
     #[must_use]
     pub fn storage(&self) -> Storage {
         match self
@@ -250,16 +256,78 @@ impl Config {
             .map(str::trim)
         {
             Some("sqlite") => Storage::Sqlite,
+            Some("mysql") | Some("mariadb") => Storage::MySql,
             Some("json") => Storage::Json,
-            other => {
-                if let Some(name) = other {
-                    tracing::warn!(
-                        "`storage: {name}` is not a backend this plugin knows; the JSON store is used"
-                    );
-                }
-                Storage::Json
-            }
+            None if self.database.get("storage").is_none() => Storage::Json,
+            _ => Storage::Invalid,
         }
+    }
+
+    /// A setting from `database.yml`'s `mysql` section.
+    ///
+    /// The whole section is read the same way for MySQL and for MariaDB, so
+    /// one set of keys serves both.
+    fn mysql_value(&self, key: &str) -> Option<&Value> {
+        self.database
+            .get("mysql")
+            .and_then(|section| section.get(key))
+    }
+
+    /// `database.yml`'s `mysql.host`, defaulting to `"127.0.0.1"`.
+    #[must_use]
+    pub fn mysql_host(&self) -> String {
+        self.mysql_value("host")
+            .and_then(Value::as_str)
+            .unwrap_or("127.0.0.1")
+            .to_string()
+    }
+
+    /// `database.yml`'s `mysql.port`, defaulting to `3306`.
+    pub fn mysql_port(&self) -> Result<u16, String> {
+        match self.mysql_value("port") {
+            None => Ok(3306),
+            Some(value) => value
+                .as_i64()
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or_else(|| "mysql.port must be between 1 and 65535".into()),
+        }
+    }
+
+    /// `database.yml`'s `mysql.user`, defaulting to `"root"`.
+    #[must_use]
+    pub fn mysql_user(&self) -> String {
+        self.mysql_value("user")
+            .and_then(Value::as_str)
+            .unwrap_or("root")
+            .to_string()
+    }
+
+    /// `database.yml`'s `mysql.password`, defaulting to nothing.
+    #[must_use]
+    pub fn mysql_password(&self) -> String {
+        self.mysql_value("password")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// `database.yml`'s `mysql.database`, defaulting to `"modernhome"`.
+    #[must_use]
+    pub fn mysql_database(&self) -> String {
+        self.mysql_value("database")
+            .and_then(Value::as_str)
+            .unwrap_or("modernhome")
+            .to_string()
+    }
+
+    /// `database.yml`'s `mysql.table`, defaulting to `"modernhome_homes"`.
+    #[must_use]
+    pub fn mysql_table(&self) -> String {
+        self.mysql_value("table")
+            .and_then(Value::as_str)
+            .unwrap_or("modernhome_homes")
+            .to_string()
     }
 
     /// `database.yml`'s `sqlite.file`, defaulting to `"homes.db"`.
@@ -778,10 +846,27 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_store_name_falls_back_to_the_json_store() {
-        // A typo must not leave the plugin without a store.
+    fn an_unknown_store_name_is_refused() {
         let config = with("storage: sqlited", "database");
-        assert_eq!(config.storage(), Storage::Json);
+        assert_eq!(config.storage(), Storage::Invalid);
+    }
+
+    #[test]
+    fn mysql_and_mariadb_choose_the_same_backend() {
+        for name in ["mysql", "mariadb"] {
+            assert_eq!(
+                with(&format!("storage: {name}"), "database").storage(),
+                Storage::MySql
+            );
+        }
+        for port in ["0", "-1", "65536", "wrong"] {
+            assert!(
+                with(&format!("mysql:\n  port: {port}"), "database")
+                    .mysql_port()
+                    .is_err()
+            );
+        }
+        assert_eq!(Config::defaults().mysql_port().unwrap(), 3306);
     }
 
     #[test]
